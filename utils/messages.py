@@ -164,3 +164,8 @@ MY_SERVICES_ITEM = (
     "--------------------\n"
 )
 NO_SERVICES_FOUND = "شما در حال حاضر هیچ سرویس فعالی ندارید."
+
+
+# --- مدیریت درگاه پرداخت ---
+ADD_GATEWAY_PROMPT_TYPE = "لطفاً نوع درگاه پرداخت را انتخاب کنید:"
+ADD_GATEWAY_PROMPT_MERCHANT_ID = "لطفاً مرچنت کد (Merchant ID) درگاه زرین‌پال را وارد کنید:"

@@ -4,7 +4,9 @@ import logging
 import json
 import qrcode
 from io import BytesIO
-
+import requests
+from config import WEBHOOK_DOMAIN
+from config import ZARINPAL_MERCHANT_ID, WEBHOOK_DOMAIN
 from config import SUPPORT_CHANNEL_LINK, ADMIN_IDS
 from database.db_manager import DatabaseManager
 from api_client.xui_api_client import XuiAPIClient
@@ -13,6 +15,7 @@ from keyboards import inline_keyboards
 from utils.config_generator import ConfigGenerator
 from utils.helpers import is_float_or_int , escape_markdown_v1
 from utils.bot_helpers import send_subscription_info # این ایمپورت جدید است
+from config import ZARINPAL_MERCHANT_ID, WEBHOOK_DOMAIN , ZARINPAL_SANDBOX
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,12 @@ _config_generator: ConfigGenerator = None
 _user_menu_message_ids = {} # {user_id: message_id}
 _user_states = {} # {user_id: {'state': '...', 'data': {...}}}
 
-
+if ZARINPAL_SANDBOX:
+    ZARINPAL_API_URL = "https://sandbox.zarinpal.com/pg/v4/payment/request.json"
+    ZARINPAL_STARTPAY_URL = "https://sandbox.zarinpal.com/pg/StartPay/"
+else:
+    ZARINPAL_API_URL = "https://api.zarinpal.com/pg/v4/payment/request.json"
+    ZARINPAL_STARTPAY_URL = "https://www.zarinpal.com/pg/StartPay/"
 def register_user_handlers(bot_instance, db_manager_instance, xui_api_instance):
     global _bot, _db_manager, _xui_api, _config_generator
     _bot = bot_instance
@@ -240,21 +248,80 @@ def register_user_handlers(bot_instance, db_manager_instance, xui_api_instance):
             _bot.edit_message_text(messages.OPERATION_FAILED, user_id, message.message_id)
             return
 
-        _user_states[user_id]['data']['gateway_details'] = gateway
-        _user_states[user_id]['state'] = 'waiting_for_payment_receipt'
+        order_data = _user_states[user_id]['data']
+        user_db_info = _db_manager.get_user_by_telegram_id(user_id)
         
-        total_price = _user_states[user_id]['data']['total_price']
-        
-        payment_text = messages.PAYMENT_GATEWAY_DETAILS.format(
-            name=gateway['name'],
-            card_number=gateway['card_number'],
-            card_holder_name=gateway['card_holder_name'],
-            description_line=f"**توضیحات:** {gateway['description']}\n" if gateway['description'] else "",
-            amount=total_price
-        )
-        sent_msg = _bot.edit_message_text(payment_text, user_id, message.message_id, reply_markup=inline_keyboards.get_back_button("show_order_summary"))
-        _user_states[user_id]['prompt_message_id'] = sent_msg.message_id
-        
+        # --- منطق تفکیک نوع درگاه ---
+        if gateway['type'] == 'zarinpal':
+            _bot.edit_message_text("⏳ در حال ساخت لینک پرداخت امن... لطفاً صبر کنید.", user_id, message.message_id)
+            
+            amount_toman = int(order_data['total_price'])
+            
+            # FIX: اطلاعات درگاه را به سفارش اضافه می‌کنیم تا در وب‌هوک قابل دسترس باشد
+            order_data['gateway_details'] = gateway
+            
+            order_details_for_db = json.dumps(order_data)
+            payment_id = _db_manager.add_payment(user_db_info['id'], amount_toman, message.message_id, order_details_for_db)
+            
+            if not payment_id:
+                _bot.edit_message_text("❌ در ایجاد صورتحساب خطایی رخ داد.", user_id, message.message_id)
+                return
+
+            callback_url = f"https://{WEBHOOK_DOMAIN}/zarinpal/verify"
+            
+            payload = {
+                "merchant_id": gateway['merchant_id'],
+                "amount": amount_toman * 10, # FIX: تبدیل تومان به ریال
+                "callback_url": callback_url,
+                "description": f"خرید سرویس از ربات - سفارش شماره {payment_id}",
+                "metadata": {"user_id": str(user_id), "payment_id": str(payment_id)}
+            }
+            
+            try:
+                response = requests.post(ZARINPAL_API_URL, json=payload, timeout=20)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get("data") and result.get("data", {}).get("code") == 100:
+                    authority = result['data']['authority']
+                    payment_url = f"{ZARINPAL_STARTPAY_URL}{authority}"
+                    _db_manager.set_payment_authority(payment_id, authority)
+                    
+                    # FIX: ساخت صحیح کیبورد با دو دکمه مجزا
+                    markup = types.InlineKeyboardMarkup()
+                    btn_pay = types.InlineKeyboardButton("🚀 پرداخت آنلاین", url=payment_url)
+                    btn_back = types.InlineKeyboardButton("❌ انصراف و بازگشت", callback_data="user_main_menu")
+                    markup.add(btn_pay)
+                    markup.add(btn_back)
+                    
+                    _bot.edit_message_text("لینک پرداخت شما ساخته شد. لطفاً از طریق دکمه زیر اقدام کنید.", user_id, message.message_id, reply_markup=markup)
+                    _clear_user_state(user_id)
+                else:
+                    error_code = result.get("errors", {}).get("code", "نامشخص")
+                    error_message = result.get("errors", {}).get("message", "خطای نامشخص از درگاه پرداخت")
+                    _bot.edit_message_text(f"❌ خطا در ساخت لینک پرداخت: {error_message} (کد: {error_code})", user_id, message.message_id)
+
+            except requests.exceptions.HTTPError as http_err:
+                logger.error(f"HTTP error occurred: {http_err} - Response: {http_err.response.text}")
+                _bot.edit_message_text("❌ درگاه پرداخت با خطای داخلی مواجه شد. لطفاً بعداً تلاش کنید.", user_id, message.message_id)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error connecting to Zarinpal: {e}")
+                _bot.edit_message_text("❌ امکان اتصال به درگاه پرداخت در حال حاضر وجود ندارد.", user_id, message.message_id)
+
+        # --- منطق برای کارت به کارت ---
+        elif gateway['type'] == 'card_to_card':
+            _user_states[user_id]['data']['gateway_details'] = gateway
+            _user_states[user_id]['state'] = 'waiting_for_payment_receipt'
+            total_price = order_data['total_price']
+            payment_text = messages.PAYMENT_GATEWAY_DETAILS.format(
+                name=gateway['name'], card_number=gateway['card_number'],
+                card_holder_name=gateway['card_holder_name'],
+                description_line=f"**توضیحات:** {gateway['description']}\n" if gateway.get('description') else "",
+                amount=total_price
+            )
+            sent_msg = _bot.edit_message_text(payment_text, user_id, message.message_id, reply_markup=inline_keyboards.get_back_button("show_order_summary"))
+            _user_states[user_id]['prompt_message_id'] = sent_msg.message_id
+
     def process_payment_receipt(message):
         user_id = message.from_user.id
         state_data = _user_states.get(user_id)
@@ -472,11 +539,11 @@ def register_user_handlers(bot_instance, db_manager_instance, xui_api_instance):
         client_details, sub_link, _ = config_gen.create_client_and_configs(user_id, test_server_id, test_volume_gb, test_duration_days)
 
         if sub_link:
+            print("Free test subscription created successfully.")
+            print(f"Subscription Link: {sub_link}")
             _db_manager.record_free_test_usage(user_db_info['id'])
             _bot.delete_message(user_id, message.message_id)
             _bot.send_message(user_id, messages.GET_FREE_TEST_SUCCESS)
-            # --- بخش اصلاح شده ---
-            # فراخوانی تابع مشترک جدید
             send_subscription_info(user_id, sub_link)
         else:
             _bot.edit_message_text(messages.OPERATION_FAILED, user_id, message.message_id)
@@ -496,7 +563,7 @@ def register_user_handlers(bot_instance, db_manager_instance, xui_api_instance):
         _bot.send_photo(user_id, bio, caption=messages.QR_CODE_CAPTION)
         
         # Send Subscription Link
-        _bot.send_message(user_id, messages.CONFIG_DELIVERY_SUB_LINK.format(sub_link=helpers.escape_markdown_v1(sub_link)), parse_mode='Markdown')
+        _bot.send_message(user_id, messages.CONFIG_DELIVERY_SUB_LINK.format(sub_link=sub_link), parse_mode='Markdown')
 
     def show_my_services_list(user_id, message):
         user_db_info = _db_manager.get_user_by_telegram_id(user_id)

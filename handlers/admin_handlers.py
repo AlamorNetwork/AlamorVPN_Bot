@@ -5,7 +5,8 @@ from telebot import types
 import logging
 import datetime
 import json
-
+import os
+import zipfile
 from config import ADMIN_IDS, SUPPORT_CHANNEL_LINK
 from database.db_manager import DatabaseManager
 from api_client.xui_api_client import XuiAPIClient
@@ -35,11 +36,8 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
     # =============================================================================
 
     def _clear_admin_state(admin_id):
+        """وضعیت ادمین را فقط از دیکشنری پاک می‌کند."""
         if admin_id in _admin_states:
-            prompt_id = _admin_states[admin_id].get('prompt_message_id')
-            if prompt_id:
-                try: _bot.delete_message(admin_id, prompt_id)
-                except Exception: pass
             del _admin_states[admin_id]
 
     def _show_menu(user_id, text, markup, message=None):
@@ -150,8 +148,6 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         data = state_info.get("data", {})
         text = message.text
         
-        try: _bot.delete_message(admin_id, message.message_id)
-        except Exception: pass
 
         # --- Server Flows ---
         if state == 'waiting_for_server_name':
@@ -204,16 +200,27 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
             execute_toggle_plan_status(admin_id, text)
 
         # --- Gateway Flows ---
-        elif state == 'waiting_for_gateway_name':
-            data['name'] = text; state_info['state'] = 'waiting_for_card_number'
-            _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_CARD_NUMBER, admin_id, prompt_id)
+        if state == 'waiting_for_gateway_name':
+            data['name'] = text
+            state_info['state'] = 'waiting_for_gateway_type'
+            _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_TYPE, admin_id, prompt_id, reply_markup=inline_keyboards.get_gateway_type_selection_menu())
+        elif state == 'waiting_for_merchant_id':
+            data['merchant_id'] = text
+            state_info['state'] = 'waiting_for_gateway_description'
+            _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_DESCRIPTION, admin_id, prompt_id)
+
         elif state == 'waiting_for_card_number':
-            if not text.isdigit() or len(text) not in [16]: _bot.edit_message_text(f"شماره کارت نامعتبر است.\n\n{messages.ADD_GATEWAY_PROMPT_CARD_NUMBER}", admin_id, prompt_id); return
-            data['card_number'] = text; state_info['state'] = 'waiting_for_card_holder_name'
+            if not text.isdigit() or len(text) not in [16]:
+                _bot.edit_message_text(f"شماره کارت نامعتبر است.\n\n{messages.ADD_GATEWAY_PROMPT_CARD_NUMBER}", admin_id, prompt_id)
+                return
+            data['card_number'] = text
+            state_info['state'] = 'waiting_for_card_holder_name'
             _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_CARD_HOLDER_NAME, admin_id, prompt_id)
         elif state == 'waiting_for_card_holder_name':
-            data['card_holder_name'] = text; state_info['state'] = 'waiting_for_gateway_description'
+            data['card_holder_name'] = text
+            state_info['state'] = 'waiting_for_gateway_description'
             _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_DESCRIPTION, admin_id, prompt_id)
+
         elif state == 'waiting_for_gateway_description':
             data['description'] = None if text.lower() == 'skip' else text
             execute_add_gateway(admin_id, data)
@@ -315,6 +322,7 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         # --- پایان بخش اصلاح شده ---
 
         actions = {
+            "admin_create_backup": create_backup,
             "admin_main_menu": _show_admin_main_menu,
             "admin_server_management": _show_server_management_menu,
             "admin_plan_management": _show_plan_management_menu,
@@ -340,7 +348,9 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
             return
 
         # --- هندل کردن موارد پیچیده‌تر ---
-        if data.startswith("plan_type_"):
+        if data.startswith("gateway_type_"):
+            handle_gateway_type_selection(admin_id, call.message, data.replace('gateway_type_', ''))
+        elif data.startswith("plan_type_"):
             get_plan_details_from_callback(admin_id, message, data.replace('plan_type_', ''))
         elif data.startswith("confirm_delete_server_"):
             execute_delete_server(admin_id, message, int(data.split('_')[-1]))
@@ -402,10 +412,15 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
     def execute_add_gateway(admin_id, data):
         _clear_admin_state(admin_id)
         gateway_id = _db_manager.add_payment_gateway(
-            name=data.get('name'), gateway_type='card_to_card',
-            card_number=data.get('card_number'), card_holder_name=data.get('card_holder_name'),
-            description=data.get('description'), priority=0
+            name=data.get('name'),
+            gateway_type=data.get('gateway_type'),  # <-- اصلاح شد
+            card_number=data.get('card_number'),
+            card_holder_name=data.get('card_holder_name'),
+            merchant_id=data.get('merchant_id'),    # <-- اضافه شد
+            description=data.get('description'),
+            priority=0
         )
+        
         msg_to_send = messages.ADD_GATEWAY_SUCCESS if gateway_id else messages.ADD_GATEWAY_DB_ERROR
         _bot.send_message(admin_id, msg_to_send.format(gateway_name=data['name']))
         _show_payment_gateway_management_menu(admin_id)
@@ -591,30 +606,31 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         
         
     def save_inbound_changes(admin_id, message, server_id, selected_ids):
-        """
-        تغییرات انتخاب اینباندها را در دیتابیس ذخیره می‌کند.
-        """
+        """تغییرات انتخاب اینباندها را در دیتابیس ذخیره کرده و به کاربر بازخورد می‌دهد."""
         server_data = _db_manager.get_server_by_id(server_id)
-        # دریافت لیست کامل اینباندها که از پنل خوانده شده و در وضعیت ذخیره شده است
         panel_inbounds = _admin_states.get(admin_id, {}).get('data', {}).get('panel_inbounds', [])
         
-        # آماده‌سازی لیستی از دیکشنری‌ها برای ذخیره در دیتابیس
         inbounds_to_save = [
             {'id': p_in['id'], 'remark': p_in.get('remark', '')}
             for p_in in panel_inbounds if p_in['id'] in selected_ids
         ]
         
-        # به‌روزرسانی دیتابیس
+        # ابتدا اطلاعات در دیتابیس ذخیره می‌شود
         if _db_manager.update_server_inbounds(server_id, inbounds_to_save):
             msg = messages.INBOUND_CONFIG_SUCCESS
         else:
             msg = messages.INBOUND_CONFIG_FAILED
 
-        # نمایش نتیجه به ادمین و پاک کردن وضعیت
-        _bot.edit_message_text(msg.format(server_name=server_data['name']), admin_id, message.message_id)
-        _clear_admin_state(admin_id)
-        _show_server_management_menu(admin_id)
+        # سپس پیام فعلی ویرایش شده و دکمه بازگشت نمایش داده می‌شود
+        _bot.edit_message_text(
+            msg.format(server_name=server_data['name']),
+            admin_id,
+            message.message_id,
+            reply_markup=inline_keyboards.get_back_button("admin_server_management")
+        )
         
+        # در نهایت، وضعیت ادمین پاک می‌شود
+        _clear_admin_state(admin_id)
     def start_manage_inbounds_flow(admin_id, message):
             """فرآیند مدیریت اینباند را با نمایش لیست سرورها آغاز می‌کند."""
             _clear_admin_state(admin_id)
@@ -718,3 +734,51 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         except telebot.apihelper.ApiTelegramException as e:
             if 'message is not modified' not in e.description:
                 logger.warning(f"Error updating inbound selection keyboard: {e}")
+                
+                
+    def create_backup(admin_id, message):
+        """از فایل‌های حیاتی ربات (دیتابیس و .env) بکاپ گرفته و برای ادمین ارسال می‌کند."""
+        _bot.edit_message_text("⏳ در حال ساخت فایل پشتیبان...", admin_id, message.message_id)
+        
+        backup_filename = f"alamor_backup_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.zip"
+        
+        files_to_backup = [
+            os.path.join(os.getcwd(), '.env'),
+            _db_manager.db_path
+        ]
+        
+        try:
+            with zipfile.ZipFile(backup_filename, 'w') as zipf:
+                for file_path in files_to_backup:
+                    if os.path.exists(file_path):
+                        zipf.write(file_path, os.path.basename(file_path))
+                    else:
+                        logger.warning(f"فایل بکاپ یافت نشد: {file_path}")
+
+            with open(backup_filename, 'rb') as backup_file:
+                _bot.send_document(admin_id, backup_file, caption="✅ فایل پشتیبان شما آماده است.")
+            
+            _bot.delete_message(admin_id, message.message_id)
+            _show_admin_main_menu(admin_id)
+
+        except Exception as e:
+            logger.error(f"خطا در ساخت بکاپ: {e}")
+            _bot.edit_message_text("❌ در ساخت فایل پشتیبان خطایی رخ داد.", admin_id, message.message_id)
+        finally:
+            # پاک کردن فایل زیپ پس از ارسال
+            if os.path.exists(backup_filename):
+                os.remove(backup_filename)
+                
+                
+    def handle_gateway_type_selection(admin_id, message, gateway_type):
+        state_info = _admin_states.get(admin_id)
+        if not state_info or state_info.get('state') != 'waiting_for_gateway_type': return
+        
+        state_info['data']['gateway_type'] = gateway_type
+        
+        if gateway_type == 'zarinpal':
+            state_info['state'] = 'waiting_for_merchant_id'
+            _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_MERCHANT_ID, admin_id, message.message_id)
+        elif gateway_type == 'card_to_card':
+            state_info['state'] = 'waiting_for_card_number'
+            _bot.edit_message_text(messages.ADD_GATEWAY_PROMPT_CARD_NUMBER, admin_id, message.message_id)

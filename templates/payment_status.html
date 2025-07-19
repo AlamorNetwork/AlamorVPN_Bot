@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>وضعیت تراکنش</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');
+        body {
+            font-family: 'Vazirmatn', sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            text-align: center;
+            padding: 40px;
+            max-width: 400px;
+            width: 90%;
+        }
+        .icon {
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+        .success .icon { color: #28a745; }
+        .error .icon { color: #dc3545; }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        p {
+            font-size: 16px;
+            color: #666;
+            line-height: 1.6;
+        }
+        .ref-id {
+            background-color: #e9ecef;
+            padding: 8px 15px;
+            border-radius: 8px;
+            font-weight: bold;
+            display: inline-block;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+        .button {
+            display: inline-block;
+            background-color: #0088cc;
+            color: white;
+            padding: 12px 25px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 25px;
+            transition: background-color 0.3s;
+        }
+        .button:hover {
+            background-color: #005f8f;
+        }
+    </style>
+</head>
+<body>
+    <div class="container {% if status == 'success' %}success{% else %}error{% endif %}">
+        {% if status == 'success' %}
+            <div class="icon">✅</div>
+            <h1>پرداخت موفقیت‌آمیز بود!</h1>
+            <p>سرویس شما با موفقیت فعال شد. لطفاً به ربات تلگرام بازگردید تا اطلاعات کانفیگ خود را دریافت کنید.</p>
+            {% if ref_id %}
+                <p>شماره پیگیری شما:</p>
+                <div class="ref-id">{{ ref_id }}</div>
+            {% endif %}
+        {% else %}
+            <div class="icon">❌</div>
+            <h1>پرداخت ناموفق بود!</h1>
+            <p>{{ message }}</p>
+        {% endif %}
+        <a href="https://t.me/{{ YourBotUsername }}" class="button">بازگشت به ربات</a>
+    </div>
+</body>
+</html>

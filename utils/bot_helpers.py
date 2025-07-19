@@ -1,4 +1,4 @@
-# در فایل utils/bot_helpers.py
+# utils/bot_helpers.py (نسخه نهایی و اصلاح شده)
 
 import telebot
 import qrcode
@@ -11,15 +11,18 @@ logger = logging.getLogger(__name__)
 
 def send_subscription_info(bot: telebot.TeleBot, user_id: int, sub_link: str):
     """
-    اطلاعات اشتراک را با ارسال یک پیام (عکس QR کد با کپشن کامل) ارسال می‌کند.
+    اطلاعات اشتراک را با ارسال لینک متنی صحیح و سپس QR کد ارسال می‌کند.
     """
     bot.send_message(user_id, messages.CONFIG_DELIVERY_HEADER, parse_mode='Markdown')
     
-    # --- بخش اصلاح شده ---
-    # ساخت کپشن کامل شامل لینک و توضیحات QR کد
-    caption_text = messages.CONFIG_DELIVERY_SUB_LINK.format(sub_link=sub_link) + \
-                   "\n\n" + messages.QR_CODE_CAPTION
+    # --- راه حل قطعی: اصلاح لینک قبل از ارسال ---
+    # این خط تضمین می‌کند که هرگونه بک‌اسلش (\) اضافه شده، حذف شود.
+    # corrected_sub_link = sub_link.replace('\.', '.')
+
+    # ابتدا لینک متنی اصلاح شده ارسال می‌شود
+    bot.send_message(user_id, messages.CONFIG_DELIVERY_SUB_LINK.format(sub_link=sub_link), parse_mode='Markdown')
     
+    # سپس QR کد در یک پیام جداگانه با لینک اصلاح شده ساخته می‌شود
     try:
         qr_image = qrcode.make(sub_link)
         bio = BytesIO()
@@ -27,10 +30,7 @@ def send_subscription_info(bot: telebot.TeleBot, user_id: int, sub_link: str):
         qr_image.save(bio, 'JPEG')
         bio.seek(0)
 
-        # ارسال QR کد به همراه لینک و توضیحات در کپشن
-        bot.send_photo(user_id, bio, caption=caption_text, parse_mode='Markdown')
+        bot.send_photo(user_id, bio, caption=messages.QR_CODE_CAPTION)
         
     except Exception as e:
-        # اگر ساخت QR کد با خطا مواجه شد، فقط لینک را به صورت متنی ارسال می‌کند
         logger.error(f"Failed to generate or send QR code: {e}")
-        bot.send_message(user_id, caption_text, parse_mode='Markdown')

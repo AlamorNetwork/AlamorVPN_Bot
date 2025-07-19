@@ -15,7 +15,7 @@ def get_admin_main_inline_menu():
         types.InlineKeyboardButton("💳 مدیریت درگاه‌ها", callback_data="admin_payment_management"),
         types.InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin_user_management"),
         types.InlineKeyboardButton("📊 داشبورد", callback_data="admin_dashboard"),
-        types.InlineKeyboardButton("🤖 تنظیمات ربات", callback_data="admin_bot_settings")
+        types.InlineKeyboardButton("🗄 تهیه نسخه پشتیبان", callback_data="admin_create_backup")
     )
     return markup
 
@@ -208,4 +208,15 @@ def get_my_services_menu(purchases: list):
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"user_service_details_{p['id']}"))
     
     markup.add(types.InlineKeyboardButton("🔙 بازگشت به منو اصلی", callback_data="user_main_menu"))
+    return markup
+
+
+
+def get_gateway_type_selection_menu():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💳 کارت به کارت", callback_data="gateway_type_card_to_card"),
+        types.InlineKeyboardButton("🟢 زرین‌پال", callback_data="gateway_type_zarinpal")
+    )
+    markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="admin_payment_management"))
     return markup

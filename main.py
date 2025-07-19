@@ -63,6 +63,7 @@ def send_welcome(message):
 
 # --- تابع اصلی ---
 def main():
+    bot.remove_webhook()
     logger.info("Bot is starting...")
 
     # ایجاد جداول دیتابیس در صورت عدم وجود

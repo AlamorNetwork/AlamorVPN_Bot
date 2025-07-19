@@ -108,8 +108,29 @@ class DatabaseManager:
                     FOREIGN KEY (plan_id) REFERENCES plans (id)
                 )
             """)
-            
-            # جدول پرداخت‌ها
+
+            # جدول درگاه‌های پرداخت
+            cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS payment_gateways (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        type TEXT NOT NULL,
+                        card_number TEXT,
+                        card_holder_name TEXT,
+                        merchant_id TEXT,
+                        description TEXT,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        priority INTEGER DEFAULT 0
+                    )
+                """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS free_test_usage (
+                    user_id INTEGER PRIMARY KEY,
+                    usage_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            """)
+                
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,29 +143,9 @@ class DatabaseManager:
                     confirmation_date TIMESTAMP,
                     order_details_json TEXT,
                     admin_notification_message_id INTEGER,
+                    authority TEXT,
+                    ref_id TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (id)
-                )
-            """)
-
-            # جدول درگاه‌های پرداخت
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS payment_gateways (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    type TEXT NOT NULL,
-                    card_number TEXT,
-                    card_holder_name TEXT,
-                    description TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    priority INTEGER DEFAULT 0
-                )
-            """)
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS free_test_usage (
-                    user_id INTEGER PRIMARY KEY,
-                    usage_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
                 )
             """)
 
@@ -449,18 +450,27 @@ class DatabaseManager:
             if conn: conn.close()
             
     # --- توابع درگاه پرداخت ---
-    def add_payment_gateway(self, name, gateway_type, card_number, card_holder_name, description, priority):
+    def add_payment_gateway(self, name: str, gateway_type: str, card_number: str = None, card_holder_name: str = None, merchant_id: str = None, description: str = None, priority: int = 0):
+        """یک درگاه پرداخت جدید را با تمام اطلاعات لازم اضافه می‌کند."""
         conn = None
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
+
+            # رمزنگاری اطلاعات حساس
+            encrypted_card_number = self._encrypt(card_number) if card_number else None
+            encrypted_card_holder_name = self._encrypt(card_holder_name) if card_holder_name else None
+            encrypted_merchant_id = self._encrypt(merchant_id) if merchant_id else None
+
             cursor.execute("""
-                INSERT INTO payment_gateways (name, type, card_number, card_holder_name, description, priority, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, TRUE)
-            """, (name, gateway_type, self._encrypt(card_number), self._encrypt(card_holder_name), description, priority))
+                INSERT INTO payment_gateways (name, type, card_number, card_holder_name, merchant_id, description, is_active, priority)
+                VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
+            """, (name, gateway_type, encrypted_card_number, encrypted_card_holder_name, encrypted_merchant_id, description, priority))
             conn.commit()
+            logger.info(f"Payment Gateway '{name}' ({gateway_type}) added successfully.")
             return cursor.lastrowid
         except sqlite3.IntegrityError:
+            logger.warning(f"Payment Gateway with name '{name}' already exists.")
             return None
         except sqlite3.Error as e:
             logger.error(f"Error adding payment gateway '{name}': {e}")
@@ -483,11 +493,21 @@ class DatabaseManager:
             decrypted_gateways = []
             for gateway in gateways:
                 gateway_dict = dict(gateway)
-                gateway_dict['card_number'] = self._decrypt(gateway_dict.get('card_number'))
-                gateway_dict['card_holder_name'] = self._decrypt(gateway_dict.get('card_holder_name'))
+                # رمزگشایی اطلاعات حساس
+                if gateway_dict.get('card_number'):
+                    gateway_dict['card_number'] = self._decrypt(gateway_dict['card_number'])
+                if gateway_dict.get('card_holder_name'):
+                    gateway_dict['card_holder_name'] = self._decrypt(gateway_dict['card_holder_name'])
+                
+                # --- بخش اصلاح شده ---
+                # رمزگشایی مرچنت کد اضافه شد
+                if gateway_dict.get('merchant_id'):
+                    gateway_dict['merchant_id'] = self._decrypt(gateway_dict['merchant_id'])
+                # --- پایان بخش اصلاح شده ---
+
                 decrypted_gateways.append(gateway_dict)
             return decrypted_gateways
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error getting payment gateways: {e}")
             return []
         finally:
@@ -502,11 +522,21 @@ class DatabaseManager:
             gateway = cursor.fetchone()
             if gateway:
                 gateway_dict = dict(gateway)
-                gateway_dict['card_number'] = self._decrypt(gateway_dict.get('card_number'))
-                gateway_dict['card_holder_name'] = self._decrypt(gateway_dict.get('card_holder_name'))
+                # رمزگشایی اطلاعات حساس
+                if gateway_dict.get('card_number'):
+                    gateway_dict['card_number'] = self._decrypt(gateway_dict['card_number'])
+                if gateway_dict.get('card_holder_name'):
+                    gateway_dict['card_holder_name'] = self._decrypt(gateway_dict['card_holder_name'])
+                
+                # --- بخش اصلاح شده ---
+                # رمزگشایی مرچنت کد اضافه شد
+                if gateway_dict.get('merchant_id'):
+                    gateway_dict['merchant_id'] = self._decrypt(gateway_dict['merchant_id'])
+                # --- پایان بخش اصلاح شده ---
+
                 return gateway_dict
             return None
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error getting payment gateway {gateway_id}: {e}")
             return None
         finally:
@@ -686,3 +716,58 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"Error resetting free test usage for user {user_db_id}: {e}")
             return False
+        
+        
+        
+    # در فایل database/db_manager.py
+
+    def get_payment_by_authority(self, authority: str):
+        """پرداخت را بر اساس شناسه Authority زرین‌پال پیدا می‌کند."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM payments WHERE authority = ?", (authority,))
+            payment = cursor.fetchone()
+            return dict(payment) if payment else None
+        except sqlite3.Error as e:
+            logger.error(f"Error getting payment by authority {authority}: {e}")
+            return None
+        finally:
+            if conn: conn.close()
+
+    def confirm_online_payment(self, payment_id: int, ref_id: str):
+        """وضعیت یک پرداخت آنلاین را به 'تایید شده' تغییر داده و کد رهگیری را ذخیره می‌کند."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE payments 
+                SET is_confirmed = TRUE, ref_id = ?, confirmation_date = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (ref_id, payment_id))
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error confirming online payment for ID {payment_id}: {e}")
+            return False
+        finally:
+            if conn: conn.close()
+            
+            
+            
+    def set_payment_authority(self, payment_id: int, authority: str):
+        """شناسه authority را برای یک رکورد پرداخت ثبت می‌کند."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE payments SET authority = ? WHERE id = ?", (authority, payment_id))
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error setting authority for payment ID {payment_id}: {e}")
+            return False
+        finally:
+            if conn: conn.close()

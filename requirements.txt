@@ -1,7 +1,48 @@
-PyTelegramBotAPI==4.17.0
+# Telegram Bot Framework
+pyTelegramBotAPI==4.17.0
+
+# For making HTTP requests to X-UI panel
 requests==2.32.3
+
+# For encryption of sensitive data
 cryptography==42.0.8
+
+# For loading environment variables from .env file
 python-dotenv==1.0.1
+
+# For generating QR codes
 qrcode[pil]==7.4.2
 Pillow==10.4.0
-json==2.0.9
+Flask==3.0.3
+
+
+
+server {
+    listen 80;
+    server_name englandtls.neverlandd.ir;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name englandtls.neverlandd.ir;
+
+    # مسیر گواهی‌های SSL که توسط Certbot ساخته شده است
+    ssl_certificate /etc/letsencrypt/live/englandtls.neverlandd.ir/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/englandtls.neverlandd.ir/privkey.pem;
+
+    # تنظیمات امنیتی پیشنهادی
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080; # ارسال درخواست به سرور وب‌هوک شما
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+
+sudo certbot --nginx -d englandtls.neverlandd.ir --email albosdomboldor@gmail.com --agree-tos --no-eff-email
