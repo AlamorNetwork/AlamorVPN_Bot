@@ -122,7 +122,6 @@ def get_user_main_inline_menu():
         types.InlineKeyboardButton("🛒 خرید سرویس", callback_data="user_buy_service"),
         types.InlineKeyboardButton("🎁 اکانت تست رایگان", callback_data="user_free_test"),
         types.InlineKeyboardButton("🗂️ سرویس‌های من", callback_data="user_my_services"),
-        types.InlineKeyboardButton("📞 پشتیبانی", callback_data="user_support")
     )
     return markup
     
