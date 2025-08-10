@@ -1481,6 +1481,7 @@ class DatabaseManager:
         finally:
             if conn:
                 conn.close()
+        self._seed_messages_table()
     def add_to_user_balance(self, user_id: int, amount: float):
         """مبلغ مشخص شده را به موجودی کیف پول کاربر اضافه می‌کند."""
         sql = "UPDATE users SET balance = balance + %s WHERE id = %s;"
@@ -1563,3 +1564,37 @@ class DatabaseManager:
         except psycopg2.Error as e:
             logger.error(f"Error getting all profile inbounds for debug: {e}")
             return []
+        
+        
+    def _seed_messages_table(self):
+        """
+        جدول bot_messages را با مقادیر پیش‌فرض از فایل messages.py پر می‌کند.
+        فقط کلیدهایی که از قبل وجود نداشته باشند را اضافه می‌کند.
+        """
+        import utils.messages as messages_module
+        
+        all_messages = {
+            key: getattr(messages_module, key)
+            for key in dir(messages_module)
+            if not key.startswith('__') and isinstance(getattr(messages_module, key), str)
+        }
+        
+        if not all_messages:
+            return
+
+        sql = "INSERT INTO bot_messages (message_key, message_text) VALUES (%s, %s) ON CONFLICT (message_key) DO NOTHING;"
+        
+        data_to_insert = list(all_messages.items())
+        
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                from psycopg2.extras import execute_batch
+                execute_batch(cur, sql, data_to_insert)
+                conn.commit()
+                logger.info(f"Successfully seeded/updated {len(data_to_insert)} message keys into the database.")
+        except Exception as e:
+            logger.error(f"Error seeding messages table: {e}")
+            if conn: conn.rollback()
+        finally:
+            if conn: conn.close()
