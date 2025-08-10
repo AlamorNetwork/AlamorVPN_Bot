@@ -1451,6 +1451,12 @@ class DatabaseManager:
                 UNIQUE (profile_id, server_id, inbound_id)
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS bot_messages (
+                message_key TEXT PRIMARY KEY,
+                message_text TEXT NOT NULL
+            );
+            """,
             # --- دستورات ALTER برای کاربرانی که از نسخه‌های قدیمی‌تر آپدیت می‌کنند ---
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS balance REAL DEFAULT 0.0;",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;",
