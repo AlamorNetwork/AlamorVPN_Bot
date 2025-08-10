@@ -528,6 +528,10 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         elif data == "admin_branding_settings":
             show_branding_settings_menu(admin_id, message)
             return
+        # --- مدیریت پیام ها ---
+        elif data == "admin_message_management":
+            show_message_management_menu(admin_id, message)
+            return
         elif data == "admin_change_brand_name":
             start_change_brand_name_flow(admin_id, message)
             return
@@ -2004,3 +2008,12 @@ def register_admin_handlers(bot_instance, db_manager_instance, xui_api_instance)
         _clear_admin_state(admin_id)
         prompt = _show_menu(admin_id, "لطفاً نام برند جدید را وارد کنید (فقط حروف و اعداد انگلیسی، بدون فاصله):", inline_keyboards.get_back_button("admin_branding_settings"), message)
         _admin_states[admin_id] = {'state': 'waiting_for_brand_name', 'prompt_message_id': prompt.message_id}
+        
+        
+        
+    def show_message_management_menu(admin_id, message):
+        """منوی اصلی برای مدیریت پیام‌های ربات را نمایش می‌دهد."""
+        all_messages = _db_manager.get_all_bot_messages()
+        markup = inline_keyboards.get_message_management_menu(all_messages)
+        text = "✍️ **مدیریت پیام‌ها**\n\nبرای ویرایش هر پیام، روی آن کلیک کنید:"
+        _show_menu(admin_id, text, markup, message, parse_mode='Markdown')

@@ -532,3 +532,18 @@ def get_user_account_menu():
     return markup
 
 
+
+def get_message_management_menu(messages_list):
+    """منوی مدیریت پیام‌ها را با لیستی از پیام‌ها ایجاد می‌کند."""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    if not messages_list:
+        markup.add(types.InlineKeyboardButton("هیچ پیامی یافت نشد", callback_data="no_action"))
+    else:
+        for msg in messages_list:
+            # برای جلوگیری از طولانی شدن دکمه، متن را کوتاه می‌کنیم
+            preview_text = msg['message_text'][:30].replace('\n', ' ') + "..."
+            btn_text = f"✏️ {msg['message_key']} | {preview_text}"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"admin_edit_msg_{msg['message_key']}"))
+    
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_main_menu"))
+    return markup
