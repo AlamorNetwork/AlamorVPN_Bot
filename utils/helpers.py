@@ -7,10 +7,12 @@ import string
 import re
 # --- ایمپورت‌های جدید در اینجا اضافه شده‌اند ---
 from urllib.parse import urlparse, parse_qs
-
+from database.db_manager import DatabaseManager
+import utils.messages as messages_module
 from config import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
+_db_for_messages = DatabaseManager()
 
 
 # --- تابع جدید در اینجا اضافه شده است ---
@@ -141,3 +143,21 @@ def update_env_file(key_to_update, new_value):
     except Exception as e:
         logger.error(f"Failed to update .env file: {e}")
         return False
+    
+    
+def get_message(key: str, **kwargs):
+    """
+    پیام را از دیتابیس می‌خواند و در صورت نبود، از فایل messages.py استفاده می‌کند.
+    """
+    message_text = _db_for_messages.get_message_by_key(key)
+    
+    # اگر پیام در دیتابیس نبود (مثلاً در حین توسعه اضافه شده)، از فایل پیش‌فرض بخوان
+    if message_text is None:
+        message_text = getattr(messages_module, key, f"Message_Key_Not_Found: {key}")
+            
+    # فرمت کردن پیام با متغیرها (در صورت وجود)
+    try:
+        return message_text.format(**kwargs)
+    except KeyError:
+        # اگر متغیرهای فرمت مطابقت نداشتند، متن خام را برگردان
+        return message_text

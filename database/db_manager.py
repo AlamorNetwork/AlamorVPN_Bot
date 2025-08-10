@@ -1598,3 +1598,15 @@ class DatabaseManager:
             if conn: conn.rollback()
         finally:
             if conn: conn.close()
+            
+    def get_message_by_key(self, key: str):
+        """متن یک پیام را بر اساس کلید آن از دیتابیس می‌خواند."""
+        sql = "SELECT message_text FROM bot_messages WHERE message_key = %s;"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (key,))
+                    result = cur.fetchone()
+                    return result[0] if result else None
+        except Exception:
+            return None
