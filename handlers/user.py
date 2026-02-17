@@ -4,11 +4,11 @@ import telebot
 from telebot import types
 from datetime import datetime, timedelta
 from database.base import SessionLocal
-from database.models import User, Plan, Server, Inbound, Purchase, Payment
+from database.models import User, Plan, Server, Inbound, Purchase
 from services.xui import XUIClient
+from config import ADMIN_IDS
 
-# دیکشنری برای ذخیره مراحل خرید کاربر
-# {user_id: {'plan_id': 1, 'server_id': 2, 'inbound_id': 5}}
+# دیکشنری مراحل خرید
 user_steps = {}
 
 def get_db():
@@ -17,13 +17,13 @@ def get_db():
 def register_user_handlers(bot: telebot.TeleBot):
     
     # ==========================
-    # دستور استارت و منوی اصلی
+    # دستور استارت و منوی شیشه‌ای
     # ==========================
     @bot.message_handler(commands=['start'])
     def cmd_start(message):
         telegram_id = message.from_user.id
         
-        # ذخیره یا آپدیت کاربر در دیتابیس
+        # ذخیره کاربر در دیتابیس
         session = get_db()
         user = session.query(User).filter_by(telegram_id=telegram_id).first()
         if not user:
@@ -36,23 +36,51 @@ def register_user_handlers(bot: telebot.TeleBot):
             session.commit()
         session.close()
 
-        # منوی اصلی
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        markup.add("🛒 خرید سرویس", "👤 سرویس‌های من")
-        markup.add("🎫 پشتیبانی", "💰 کیف پول")
+        show_main_menu(bot, message.chat.id, message.from_user.id)
+
+    def show_main_menu(bot, chat_id, user_id):
+        # ساخت منوی شیشه‌ای اصلی
+        markup = types.InlineKeyboardMarkup(row_width=2)
         
-        bot.send_message(message.chat.id, f"سلام {message.from_user.first_name} عزیز 👋\nبه ربات خرید فیلترشکن خوش آمدید.", reply_markup=markup)
+        btn_buy = types.InlineKeyboardButton("🛒 خرید سرویس", callback_data="main_buy")
+        btn_services = types.InlineKeyboardButton("👤 سرویس‌های من", callback_data="main_services")
+        btn_wallet = types.InlineKeyboardButton("💰 کیف پول", callback_data="main_wallet")
+        btn_support = types.InlineKeyboardButton("🎫 پشتیبانی", callback_data="main_support")
+        
+        markup.add(btn_buy, btn_services)
+        markup.add(btn_wallet, btn_support)
+
+        # 🔐 تشخیص هوشمند ادمین
+        # اگر کاربر ادمین باشد، دکمه مدیریت را می‌بیند
+        if user_id in ADMIN_IDS:
+            markup.add(types.InlineKeyboardButton("⚙️ پنل مدیریت (Admin)", callback_data="main_admin_panel"))
+        
+        text = f"سلام دوست من 👋\nبه ربات هوشمند ما خوش آمدید.\n\nاز منوی زیر انتخاب کنید:"
+        bot.send_message(chat_id, text, reply_markup=markup)
 
     # ==========================
-    # هندلرهای منوی متنی
+    # هندلرهای منوی اصلی (کال‌بک)
     # ==========================
-    @bot.message_handler(func=lambda msg: msg.text == "🛒 خرید سرویس")
-    def menu_buy(message):
-        show_plans(bot, message)
+    
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('main_'))
+    def handle_main_menu(call):
+        action = call.data
+        
+        if action == "main_buy":
+            show_plans(bot, call.message)
+            
+        elif action == "main_services":
+            show_user_services(bot, call.message)
+            
+        elif action == "main_wallet":
+            bot.answer_callback_query(call.id, "بخش کیف پول به زودی اضافه می‌شود 💰")
+            
+        elif action == "main_support":
+            bot.answer_callback_query(call.id, "برای پشتیبانی به آیدی ادمین پیام دهید 🎫")
 
-    @bot.message_handler(func=lambda msg: msg.text == "👤 سرویس‌های من")
-    def menu_my_services(message):
-        show_user_services(bot, message)
+        elif action == "main_admin_panel":
+            # این کال‌بک در فایل admin.py هندل می‌شود، اما محض اطمینان اینجا پاس می‌دهیم
+            pass 
 
     # ==========================
     # پروسه خرید (Flow)
@@ -65,15 +93,16 @@ def register_user_handlers(bot: telebot.TeleBot):
         session.close()
 
         if not plans:
-            bot.send_message(message.chat.id, "❌ در حال حاضر پلنی برای فروش وجود ندارد.")
+            bot.edit_message_text("❌ در حال حاضر پلنی وجود ندارد.", message.chat.id, message.message_id)
             return
 
         markup = types.InlineKeyboardMarkup(row_width=1)
         for p in plans:
-            btn_text = f"💎 {p.name} | {p.volume_gb} GB | {p.duration_days} روز | {int(p.price):,} تومان"
+            btn_text = f"💎 {p.name} | {p.volume_gb} GB | {p.duration_days} روز | {int(p.price):,} T"
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_plan_{p.id}"))
         
-        bot.send_message(message.chat.id, "📋 **لطفاً یکی از تعرفه‌های زیر را انتخاب کنید:**", reply_markup=markup, parse_mode="Markdown")
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main"))
+        bot.edit_message_text("📋 **لطفاً تعرفه مورد نظر را انتخاب کنید:**", message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
 
     # 2. دریافت پلن و نمایش سرورها
     @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_plan_'))
@@ -83,9 +112,7 @@ def register_user_handlers(bot: telebot.TeleBot):
 
         session = get_db()
         servers = session.query(Server).filter_by(is_active=True).all()
-        
-        # فقط سرورهایی که اینباند دارند را نشان بده
-        valid_servers = [s for s in servers if s.inbounds]
+        valid_servers = [s for s in servers if s.inbounds] # فقط سرورهای دارای اینباند
         session.close()
 
         if not valid_servers:
@@ -96,16 +123,13 @@ def register_user_handlers(bot: telebot.TeleBot):
         for s in valid_servers:
             markup.add(types.InlineKeyboardButton(f"🇩🇪 {s.name}", callback_data=f"buy_server_{s.id}"))
         
-        bot.edit_message_text("🌍 **لطفاً لوکیشن (سرور) خود را انتخاب کنید:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="main_buy"))
+        bot.edit_message_text("🌍 **لوکیشن سرور را انتخاب کنید:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-    # 3. دریافت سرور و نمایش اینباندها (پورت‌ها)
+    # 3. دریافت سرور و نمایش اینباندها
     @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_server_'))
     def step_select_inbound(call):
         server_id = int(call.data.split('_')[-1])
-        if call.from_user.id not in user_steps:
-            bot.answer_callback_query(call.id, "نشست منقضی شد. دوباره تلاش کنید.")
-            return
-        
         user_steps[call.from_user.id]['server_id'] = server_id
 
         session = get_db()
@@ -114,23 +138,20 @@ def register_user_handlers(bot: telebot.TeleBot):
 
         markup = types.InlineKeyboardMarkup()
         for i in inbounds:
-            # نمایش نام اینباند و پروتکل (مثلاً: همراه اول - VLESS)
             markup.add(types.InlineKeyboardButton(f"⚡️ {i.remark} ({i.protocol})", callback_data=f"buy_inbound_{i.id}"))
             
-        bot.edit_message_text("🔌 **لطفاً نوع اتصال (اپراتور) را انتخاب کنید:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"buy_plan_{user_steps[call.from_user.id]['plan_id']}"))
+        bot.edit_message_text("🔌 **نوع اتصال (اپراتور) را انتخاب کنید:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
     # 4. تایید نهایی و پرداخت
     @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_inbound_'))
     def step_payment(call):
         inbound_id = int(call.data.split('_')[-1])
         user_id = call.from_user.id
-        
-        if user_id not in user_steps: return
         user_steps[user_id]['inbound_id'] = inbound_id
         
-        # خواندن اطلاعات برای فاکتور
-        data = user_steps[user_id]
         session = get_db()
+        data = user_steps[user_id]
         plan = session.query(Plan).get(data['plan_id'])
         server = session.query(Server).get(data['server_id'])
         session.close()
@@ -139,13 +160,13 @@ def register_user_handlers(bot: telebot.TeleBot):
             "🧾 **فاکتور نهایی**\n\n"
             f"📦 پلن: {plan.name}\n"
             f"🌍 سرور: {server.name}\n"
-            f"💰 مبلغ قابل پرداخت: {int(plan.price):,} تومان\n\n"
-            "💳 لطفاً جهت تکمیل خرید، پرداخت را انجام دهید."
+            f"💰 مبلغ: {int(plan.price):,} تومان\n\n"
+            "جهت دریافت آنی، پرداخت کنید 👇"
         )
 
         markup = types.InlineKeyboardMarkup()
-        # اینجا بعداً درگاه زرین‌پال یا کارت‌به‌کارت وصل می‌شود. فعلاً دکمه "پرداخت تستی" داریم.
-        markup.add(types.InlineKeyboardButton("✅ پرداخت تستی (موجودی)", callback_data="pay_confirm"))
+        markup.add(types.InlineKeyboardButton("💳 پرداخت (تستی)", callback_data="pay_confirm"))
+        markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="back_to_main"))
         
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
@@ -155,34 +176,28 @@ def register_user_handlers(bot: telebot.TeleBot):
         user_id = call.from_user.id
         if user_id not in user_steps: return
         
-        data = user_steps[user_id]
-        bot.edit_message_text("⏳ **در حال ساخت کانفیگ اختصاصی شما...**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("⏳ **در حال ساخت کانفیگ اختصاصی...**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         
         session = get_db()
         try:
-            # 1. گرفتن اطلاعات از دیتابیس
             user_db = session.query(User).filter_by(telegram_id=user_id).first()
+            data = user_steps[user_id]
             plan = session.query(Plan).get(data['plan_id'])
             inbound = session.query(Inbound).get(data['inbound_id'])
-            server = inbound.server # دسترسی به سرور از طریق رابطه
+            server = inbound.server
 
-            # 2. تولید UUID و نام کاربری
             new_uuid = str(uuid.uuid4())
-            email = f"user_{new_uuid[:8]}" # ایمیل رندوم برای پنل
+            email = f"u{new_uuid[:8]}" 
             
-            # 3. اتصال به پنل ثنایی و ساخت یوزر
+            # اتصال به سرور
             xui = XUIClient(server.panel_url, server.username, server.password)
-            
-            # لاگین
             if not xui.login():
-                bot.send_message(call.message.chat.id, "❌ خطای فنی در اتصال به سرور. مبلغ به کیف پول برگشت خورد.")
+                bot.send_message(call.message.chat.id, "❌ خطا در اتصال به سرور.")
                 return
 
-            # محاسبه زمان انقضا (Timestamp به میلی‌ثانیه)
             expire_time = int((datetime.now() + timedelta(days=plan.duration_days)).timestamp() * 1000)
             
-            # ارسال درخواست ساخت به پنل
-            # نکته: ما از xui_id که در دیتابیس ذخیره کردیم استفاده می‌کنیم
+            # ساخت کلاینت
             success = xui.add_client(
                 inbound_id=inbound.xui_id,
                 email=email,
@@ -195,15 +210,11 @@ def register_user_handlers(bot: telebot.TeleBot):
             )
 
             if success:
-                # 4. دریافت ساب آیدی (برای لینک سابسکریپشن)
-                # در پنل‌های جدید ساب آیدی خودکار ساخته می‌شود، باید کلاینت را دوباره بگیریم تا subId را بفهمیم
                 client_info = xui.get_client_info(inbound.xui_id, new_uuid)
-                sub_id = client_info.get('subId', new_uuid) # اگر ساب آیدی نداشت (پنل قدیمی)، از uuid استفاده کن
+                sub_id = client_info.get('subId', new_uuid)
                 
-                # ساخت لینک نهایی
                 final_link = f"{server.subscription_url.rstrip('/')}/{sub_id}"
 
-                # 5. ثبت خرید در دیتابیس
                 new_purchase = Purchase(
                     user_id=user_db.id,
                     inbound_id=inbound.id,
@@ -215,60 +226,94 @@ def register_user_handlers(bot: telebot.TeleBot):
                 session.add(new_purchase)
                 session.commit()
 
-                # 6. تحویل به کاربر
                 msg = (
-                    "✅ **خرید با موفقیت انجام شد!**\n\n"
-                    f"🔗 **لینک اتصال شما:**\n`{final_link}`\n\n"
-                    "⚠️ این لینک را در نرم‌افزار V2rayNG یا Streisand کپی کنید.\n"
-                    "🔄 برای آپدیت حجم، همین لینک را در نرم‌افزار Update کنید."
+                    "✅ **خرید موفقیت‌آمیز بود!**\n\n"
+                    f"🔗 **لینک اتصال:**\n`{final_link}`\n\n"
+                    "روی لینک بزنید تا کپی شود، سپس در نرم‌افزار وارد کنید."
                 )
-                bot.send_message(call.message.chat.id, msg, parse_mode="Markdown")
+                
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🏠 بازگشت به منو", callback_data="back_to_main"))
+                
+                bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
             else:
-                bot.send_message(call.message.chat.id, "❌ خطا در ساخت کاربر در پنل. لطفاً با پشتیبانی تماس بگیرید.")
+                bot.send_message(call.message.chat.id, "❌ خطا در ساخت کاربر.")
 
         except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ خطای سیستمی: {e}")
-            print(e)
+            bot.send_message(call.message.chat.id, f"Error: {e}")
         finally:
             session.close()
-            del user_steps[user_id]
+            if user_id in user_steps: del user_steps[user_id]
 
-    # ==========================
-    # نمایش سرویس‌های کاربر
-    # ==========================
+    # دکمه بازگشت به منوی اصلی
+    @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+    def back_to_main(call):
+        show_main_menu(bot, call.message.chat.id, call.from_user.id)
+        # حذف پیام قبلی برای تمیزی
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+
+    # نمایش سرویس‌ها
     def show_user_services(bot, message):
-        telegram_id = message.from_user.id
         session = get_db()
-        user = session.query(User).filter_by(telegram_id=telegram_id).first()
+        user = session.query(User).filter_by(telegram_id=message.from_user.id).first()
         
         if not user or not user.purchases:
-            bot.send_message(message.chat.id, "شما هنوز سرویسی خریداری نکرده‌اید.")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main"))
+            bot.edit_message_text("شما هنوز سرویسی ندارید.", message.chat.id, message.message_id, reply_markup=markup)
             session.close()
             return
 
+        bot.delete_message(message.chat.id, message.message_id) # پاک کردن منوی قبلی
+        
         for p in user.purchases:
             if not p.is_active: continue
-            
-            # محاسبه روزهای باقیمانده
             days_left = (p.expire_date - datetime.now()).days
-            
             status = "🟢 فعال" if days_left > 0 else "🔴 منقضی"
             
             text = (
-                f"🔰 **سرویس {p.inbound.protocol.upper()}**\n"
-                f"📅 انقضا: {p.expire_date.strftime('%Y-%m-%d')} ({days_left} روز دیگر)\n"
-                f" وضعیت: {status}\n\n"
-                f"🔗 لینک: `{p.sub_link}`"
+                f"🔰 **{p.inbound.protocol.upper()}** | {p.inbound.server.name}\n"
+                f"📅 انقضا: {days_left} روز دیگر\n"
+                f"🔗 `{p.sub_link}`"
             )
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 دریافت QR Code", callback_data=f"qr_{p.id}"))
-            
+            markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="back_to_main"))
             bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
             
         session.close()
 
-    # QR Code Handler
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('qr_'))
-    def send_qr(call):
-        # اینجا بعداً کد تولید QR را اضافه می‌کنیم
-        bot.answer_callback_query(call.id, "این قابلیت به زودی اضافه می‌شود.")
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('get_configs_'))
+    def send_single_configs(call):
+        purchase_id = int(call.data.split('_')[-1])
+        session = get_db()
+        purchase = session.query(Purchase).get(purchase_id)
+        
+        if not purchase:
+            bot.answer_callback_query(call.id, "سرویس یافت نشد.")
+            session.close()
+            return
+
+        # پیدا کردن سرور و تمپلیت
+        # چون خرید ما به پلن وصل است، باید سرور را پیدا کنیم
+        # (در کد قبلی ساده‌سازی کردیم، فرض می‌کنیم خرید به یک اینباند اصلی وصل بوده یا از طریق پلن پیدا می‌کنیم)
+        # راه حل بهتر: در جدول Purchase ستون server_id را نگه داریم یا از طریق رابطه پیدا کنیم.
+        # بیایید فرض کنیم رابطه purchase.plan.inbounds[0].server برقرار است.
+        
+        target_server = purchase.plan.inbounds[0].server
+        config_text = ""
+
+        # 1. تلاش برای استفاده از تمپلیت (اولویت با تمپلیت ادمین است چون دقیق‌تر است)
+        if target_server.config_template:
+            # جایگزینی متغیرها
+            # فرمت تمپلیت باید اینطور باشد: vless://UUID@domain:port...
+            # ما فقط UUID و EMAIL را عوض می‌کنیم
+            email_part = f"u{purchase.uuid[:8]}"
+            config_text = target_server.config_template.replace("UUID", purchase.uuid).replace("EMAIL", email_part)
+            
+            bot.send_message(call.message.chat.id, f"⚙️ **کانفیگ اختصاصی شما:**\n\n`{config_text}`", parse_mode="Markdown")
+            
+        else:
+            # 2. اگر تمپلیت نبود، فقط لینک ساب را می‌دهیم
+            bot.send_message(call.message.chat.id, "⚠️ مدیر سرور تمپلیت کانفیگ را تنظیم نکرده است.\nلطفاً از لینک اشتراک استفاده کنید.")
+
+        session.close()

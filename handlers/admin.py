@@ -1,13 +1,12 @@
 # handlers/admin.py
 import telebot
 from telebot import types
-from sqlalchemy.orm import Session
 from database.base import SessionLocal
-from database.models import Server, User, Plan
+from database.models import Server, User, Plan, Inbound, plan_inbound_association
 from config import ADMIN_IDS
 from services.xui import XUIClient
 
-# وضعیت‌های موقت برای ویزاردها (افزودن سرور و پلن)
+# وضعیت‌های موقت برای ویزاردها
 admin_states = {}
 
 def is_admin(user_id):
@@ -16,177 +15,249 @@ def is_admin(user_id):
 def get_db():
     return SessionLocal()
 
+# --- تابع کمکی برای دکمه کنسل ---
+def cancel_btn():
+    m = types.InlineKeyboardMarkup()
+    m.add(types.InlineKeyboardButton("❌ لغو عملیات", callback_data="admin_cancel_state"))
+    return m
+
 def register_admin_handlers(bot: telebot.TeleBot):
     
-    # ==========================
-    # منوی اصلی ادمین
-    # ==========================
+    # اتصال دکمه منوی اصلی به پنل ادمین
+    @bot.callback_query_handler(func=lambda call: call.data == 'main_admin_panel')
+    def open_admin_panel(call):
+        if not is_admin(call.from_user.id): return
+        admin_panel_menu(bot, call.message)
+
+    # دستور مستقیم /admin
     @bot.message_handler(commands=['admin'])
-    def admin_panel(message):
+    def cmd_admin(message):
         if not is_admin(message.from_user.id): return
+        admin_panel_menu(bot, message)
 
+    def admin_panel_menu(bot, message):
         markup = types.InlineKeyboardMarkup(row_width=2)
-        btn_servers = types.InlineKeyboardButton("🖥 مدیریت سرورها", callback_data="admin_servers_menu")
-        btn_plans = types.InlineKeyboardButton("💰 مدیریت پلن‌ها", callback_data="admin_plans_menu")
-        btn_users = types.InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_users_stats")
-        btn_close = types.InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")
-        
-        markup.add(btn_servers, btn_plans)
-        markup.add(btn_users)
-        markup.add(btn_close)
-
-        text = "🛠 **پنل مدیریت ربات**\n\nلطفاً بخش مورد نظر را انتخاب کنید:"
-        bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+        markup.add(
+            types.InlineKeyboardButton("🖥 سرورها & اینباندها", callback_data="admin_servers_menu"),
+            types.InlineKeyboardButton("💰 پلن‌ها", callback_data="admin_plans_menu"),
+            types.InlineKeyboardButton("❌ بستن", callback_data="admin_close")
+        )
+        # چک میکنیم پیام قبلی متن بوده یا کال‌بک برای ویرایش صحیح
+        if hasattr(message, 'message_id'):
+            # اگر از طریق دستور آمده، پیام جدید میفرستیم
+             bot.send_message(message.chat.id, "🛠 **پنل مدیریت پیشرفته**", reply_markup=markup, parse_mode="Markdown")
+        else:
+            # اگر از طریق دکمه آمده (کال‌بک)، ادیت میکنیم
+             bot.edit_message_text("🛠 **پنل مدیریت پیشرفته**", message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
 
     # ==========================
-    # هندلر دکمه‌های منوی اصلی
+    # هندلر دکمه‌های ادمین
     # ==========================
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_') or call.data.startswith('server_') or call.data.startswith('plan_'))
     def handle_admin_callbacks(call):
         if not is_admin(call.from_user.id): return
-        
         action = call.data
         
         if action == "admin_close":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             return
 
-        # --- بخش سرورها ---
-        if action == "admin_servers_menu":
-            show_servers_menu(bot, call.message)
-            
-        elif action == "admin_add_server":
-            start_add_server(bot, call.message)
-            
-        elif action == "admin_list_servers":
-            list_servers(bot, call.message)
-
-        elif action.startswith("server_info_"):
-            server_id = int(action.split("_")[-1])
-            show_server_details(bot, call.message, server_id)
-
-        elif action.startswith("server_test_"):
-            server_id = int(action.split("_")[-1])
-            test_server_connection(bot, call.message, server_id)
-
-        elif action.startswith("server_delete_"):
-            server_id = int(action.split("_")[-1])
-            delete_server(bot, call.message, server_id)
-
-        # --- بخش پلن‌ها ---
-        elif action == "admin_plans_menu":
-            show_plans_menu(bot, call.message)
-
-        elif action == "admin_add_plan":
-            start_add_plan(bot, call.message)
-
-        elif action == "admin_list_plans":
-            list_plans(bot, call.message)
-            
-        elif action.startswith("plan_delete_"):
-            plan_id = int(action.split("_")[-1])
-            delete_plan(bot, call.message, plan_id)
-
-        # --- دکمه بازگشت ---
-        elif action == "admin_back_main":
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-            admin_panel(call.message)
-
         elif action == "admin_cancel_state":
             if call.from_user.id in admin_states:
                 del admin_states[call.from_user.id]
             bot.send_message(call.message.chat.id, "❌ عملیات لغو شد.")
-            admin_panel(call.message)
+            admin_panel_menu(bot, call.message)
+
+        # --- بخش سرورها ---
+        elif action == "admin_servers_menu":
+            show_servers_menu(bot, call.message)
+        elif action == "admin_add_server":
+            start_add_server(bot, call.message)
+        elif action == "admin_list_servers":
+            list_servers(bot, call.message)
+        
+        elif action.startswith("server_info_"):
+            sid = int(action.split("_")[-1])
+            show_server_details(bot, call.message, sid)
+        elif action.startswith("server_sync_"):
+            sid = int(action.split("_")[-1])
+            sync_server_inbounds(bot, call.message, sid)
+        elif action.startswith("server_del_"):
+            sid = int(action.split("_")[-1])
+            delete_server(bot, call.message, sid)
+        elif action.startswith("server_test_"):
+            sid = int(action.split("_")[-1])
+            test_server_connection(bot, call.message, sid)
+
+        # --- بخش پلن‌ها ---
+        elif action == "admin_plans_menu":
+            show_plans_menu(bot, call.message)
+        elif action == "admin_add_plan":
+            start_add_plan(bot, call.message)
+        elif action == "admin_list_plans":
+            list_plans(bot, call.message)
+        elif action.startswith("plan_del_"):
+            pid = int(action.split("_")[-1])
+            delete_plan(bot, call.message, pid)
+
+        # --- بازگشت ---
+        elif action == "admin_back_main":
+            admin_panel_menu(bot, call.message)
 
     # ==========================
-    # پردازش ورودی‌های متنی (ویزاردها)
+    # پردازش ورودی‌های متنی (ویزارد)
     # ==========================
     @bot.message_handler(func=lambda msg: is_admin(msg.from_user.id) and msg.from_user.id in admin_states)
     def handle_admin_inputs(message):
-        user_id = message.from_user.id
-        state = admin_states[user_id]
+        uid = message.chat.id
+        state = admin_states[uid]
         step = state['step']
         text = message.text.strip()
         
-        # --- ویزارد افزودن سرور ---
-        if step.startswith('server_'):
-            process_server_wizard(bot, message, state, text)
+        # --- ویزارد سرور ---
+        if step == 'server_name':
+            state['data']['name'] = text
+            state['step'] = 'server_url'
+            bot.send_message(uid, "🔗 **آدرس پنل را وارد کنید:**\n(مثال: http://1.1.1.1:2053)", reply_markup=cancel_btn())
             
-        # --- ویزارد افزودن پلن ---
-        elif step.startswith('plan_'):
-            process_plan_wizard(bot, message, state, text)
+        elif step == 'server_url':
+            state['data']['panel_url'] = text.rstrip('/')
+            state['step'] = 'server_user'
+            bot.send_message(uid, "👤 **نام کاربری پنل:**", reply_markup=cancel_btn())
+            
+        elif step == 'server_user':
+            state['data']['username'] = text
+            state['step'] = 'server_pass'
+            bot.send_message(uid, "🔑 **رمز عبور پنل:**", reply_markup=cancel_btn())
+            
+        elif step == 'server_pass':
+            state['data']['password'] = text
+            state['step'] = 'server_sub'
+            bot.send_message(uid, "🌐 **آدرس سابسکریپشن (لینک اتصال):**\n(مثال: https://sub.domain.com/sub)", reply_markup=cancel_btn())
+            
+        elif step == 'server_sub':
+            state['data']['subscription_url'] = text.rstrip('/')
+            state['step'] = 'server_template'
+            msg = (
+                "📝 **(اختیاری) تمپلیت کانفیگ:**\n\n"
+                "یک نمونه کانفیگ Vless/Vmess وارد کنید و جای UUID کلمه `UUID` و جای نام کلاینت `EMAIL` را بنویسید.\n"
+                "اگر نمی‌خواهید، کلمه `skip` را ارسال کنید.\n\n"
+                "مثال:\n`vless://UUID@google.com:443?security=reality&...#EMAIL`"
+            )
+            bot.send_message(uid, msg, reply_markup=cancel_btn(), parse_mode="Markdown")
 
-# ==========================================================
-#  بخش مدیریت سرورها (Logic)
-# ==========================================================
+        elif step == 'server_template':
+            if text.lower() == 'skip':
+                state['data']['config_template'] = None
+            else:
+                state['data']['config_template'] = text
+            
+            save_server_to_db(bot, message, state['data'])
+            del admin_states[uid]
+
+        # --- ویزارد پلن ---
+        elif step == 'plan_name':
+            state['data']['name'] = text
+            state['step'] = 'plan_gb'
+            bot.send_message(uid, "📦 **حجم پلن (GB):**", reply_markup=cancel_btn())
+
+        elif step == 'plan_gb':
+            if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
+            state['data']['volume_gb'] = float(text)
+            state['step'] = 'plan_days'
+            bot.send_message(uid, "⏳ **مدت زمان (روز):**", reply_markup=cancel_btn())
+
+        elif step == 'plan_days':
+            if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
+            state['data']['duration_days'] = int(text)
+            state['step'] = 'plan_price'
+            bot.send_message(uid, "💰 **قیمت (تومان):**", reply_markup=cancel_btn())
+
+        elif step == 'plan_price':
+            if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
+            state['data']['price'] = float(text)
+            
+            # ذخیره پلن و اتصال به همه اینباندها (فعلاً ساده)
+            save_plan_to_db(bot, message, state['data'])
+            del admin_states[uid]
+
+# ==========================
+# توابع منطقی (Logic Functions)
+# ==========================
 
 def show_servers_menu(bot, message):
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("➕ افزودن سرور جدید", callback_data="admin_add_server"))
+    markup.add(types.InlineKeyboardButton("➕ افزودن سرور", callback_data="admin_add_server"))
     markup.add(types.InlineKeyboardButton("📋 لیست سرورها", callback_data="admin_list_servers"))
     markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back_main"))
-    
-    bot.edit_message_text("🖥 **مدیریت سرورها**\nیک گزینه را انتخاب کنید:", 
-                          message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+    bot.edit_message_text("🖥 **مدیریت سرورها**", message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 def list_servers(bot, message):
     session = get_db()
     servers = session.query(Server).all()
     session.close()
-
+    
     if not servers:
-        bot.answer_callback_query(message.id, "هیچ سروری ثبت نشده است.")
+        bot.answer_callback_query(message.id, "لیست خالی است.")
         return
 
     markup = types.InlineKeyboardMarkup()
     for s in servers:
-        # دکمه برای هر سرور
-        markup.add(types.InlineKeyboardButton(f"{s.name} ({s.panel_url})", callback_data=f"server_info_{s.id}"))
-    
-    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_servers_menu"))
-    
-    bot.edit_message_text("📋 برای مدیریت روی نام سرور کلیک کنید:", 
-                          message.chat.id, message.message_id, reply_markup=markup)
+        markup.add(types.InlineKeyboardButton(f"🖥 {s.name}", callback_data=f"server_info_{s.id}"))
+    markup.add(types.InlineKeyboardButton("🔙", callback_data="admin_servers_menu"))
+    bot.edit_message_text("یک سرور را انتخاب کنید:", message.chat.id, message.message_id, reply_markup=markup)
 
 def show_server_details(bot, message, server_id):
     session = get_db()
     server = session.query(Server).get(server_id)
-    session.close()
-
     if not server:
-        bot.answer_callback_query(message.id, "سرور یافت نشد.")
+        session.close()
         return
 
+    inbound_count = len(server.inbounds)
+    status_icon = "✅" if server.is_active else "❌"
+    
     text = (
-        f"🖥 **جزئیات سرور:** `{server.name}`\n\n"
-        f"🔗 **URL:** `{server.panel_url}`\n"
-        f"👤 **User:** `{server.username}`\n"
-        f"🌐 **Sub URL:** `{server.subscription_url}`\n"
+        f"🖥 **سرور:** `{server.name}`\n"
+        f"🔗 **آدرس:** `{server.panel_url}`\n"
+        f"📡 **تعداد اینباندها:** {inbound_count}\n"
+        f"وضعیت: {status_icon}\n\n"
+        "برای فروش، باید اینباندهای سرور را همگام‌سازی کنید."
     )
-
+    
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("📡 تست اتصال", callback_data=f"server_test_{server.id}"),
-        types.InlineKeyboardButton("🗑 حذف", callback_data=f"server_delete_{server.id}")
+        types.InlineKeyboardButton("🔄 همگام‌سازی اینباندها", callback_data=f"server_sync_{server.id}")
     )
-    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_list_servers"))
-
+    markup.add(types.InlineKeyboardButton("🗑 حذف سرور", callback_data=f"server_del_{server.id}"))
+    markup.add(types.InlineKeyboardButton("🔙", callback_data="admin_list_servers"))
+    
     bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-def test_server_connection(bot, message, server_id):
-    session = get_db()
-    server = session.query(Server).get(server_id)
     session.close()
 
-    bot.answer_callback_query(message.id, "⏳ در حال تست اتصال...")
-    
-    client = XUIClient(server.panel_url, server.username, server.password)
-    if client.login():
-        stats = client.get_system_status()
-        online_count = len(stats) if stats else 0
-        bot.send_message(message.chat.id, f"✅ **اتصال موفق بود!**\nسرور: `{server.name}`\nکاربران آنلاین: {online_count}", parse_mode="Markdown")
-    else:
-        bot.send_message(message.chat.id, f"❌ **اتصال ناموفق!**\nلطفاً آدرس، یوزرنیم و پسورد سرور `{server.name}` را بررسی کنید.", parse_mode="Markdown")
+def start_add_server(bot, message):
+    admin_states[message.chat.id] = {'step': 'server_name', 'data': {}}
+    bot.edit_message_text("📝 **نام سرور را وارد کنید:**\n(مثال: Germany-1)", message.chat.id, message.message_id, reply_markup=cancel_btn(), parse_mode="Markdown")
+
+def save_server_to_db(bot, message, data):
+    session = get_db()
+    try:
+        s = Server(
+            name=data['name'], 
+            panel_url=data['panel_url'], 
+            username=data['username'], 
+            password=data['password'], 
+            subscription_url=data['subscription_url'],
+            config_template=data.get('config_template')
+        )
+        session.add(s)
+        session.commit()
+        bot.send_message(message.chat.id, "✅ سرور ذخیره شد. لطفاً **همگام‌سازی اینباند** را انجام دهید.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Error: {e}")
+    finally:
+        session.close()
 
 def delete_server(bot, message, server_id):
     session = get_db()
@@ -194,179 +265,118 @@ def delete_server(bot, message, server_id):
     if server:
         session.delete(server)
         session.commit()
-        bot.answer_callback_query(message.id, "سرور حذف شد ✅")
+        bot.answer_callback_query(message.id, "حذف شد.")
         list_servers(bot, message)
-    else:
-        bot.answer_callback_query(message.id, "خطا در حذف.")
     session.close()
 
-# --- ویزارد افزودن سرور ---
-def start_add_server(bot, message):
-    admin_states[message.chat.id] = {'step': 'server_name', 'data': {}}
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
-    
-    bot.edit_message_text("📝 **نام سرور را وارد کنید:**\n(مثال: Germany-1)", 
-                          message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-def process_server_wizard(bot, message, state, text):
-    step = state['step']
-    user_id = message.chat.id
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
-
-    if step == 'server_name':
-        state['data']['name'] = text
-        state['step'] = 'server_url'
-        bot.send_message(user_id, "🔗 **آدرس پنل را وارد کنید:**\n(مثال: http://1.1.1.1:2053)", reply_markup=markup)
-        
-    elif step == 'server_url':
-        state['data']['panel_url'] = text.rstrip('/')
-        state['step'] = 'server_user'
-        bot.send_message(user_id, "👤 **نام کاربری پنل:**", reply_markup=markup)
-        
-    elif step == 'server_user':
-        state['data']['username'] = text
-        state['step'] = 'server_pass'
-        bot.send_message(user_id, "🔑 **رمز عبور پنل:**", reply_markup=markup)
-        
-    elif step == 'server_pass':
-        state['data']['password'] = text
-        state['step'] = 'server_sub'
-        bot.send_message(user_id, "🌐 **آدرس سابسکریپشن (لینک اتصال):**\n(مثال: https://sub.mydomain.com/sub)", reply_markup=markup)
-        
-    elif step == 'server_sub':
-        state['data']['subscription_url'] = text.rstrip('/')
-        
-        # ذخیره در دیتابیس
-        save_server(bot, message, state['data'])
-        del admin_states[user_id]
-
-def save_server(bot, message, data):
+def test_server_connection(bot, message, server_id):
     session = get_db()
-    try:
-        new_server = Server(
-            name=data['name'],
-            panel_url=data['panel_url'],
-            username=data['username'],
-            password=data['password'],
-            subscription_url=data['subscription_url']
-        )
-        session.add(new_server)
-        session.commit()
-        bot.send_message(message.chat.id, "✅ سرور با موفقیت ذخیره شد.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ خطا در ذخیره: {e}")
-    finally:
+    server = session.query(Server).get(server_id)
+    session.close()
+
+    bot.answer_callback_query(message.id, "⏳ در حال تست اتصال...")
+    client = XUIClient(server.panel_url, server.username, server.password)
+    
+    if client.login():
+        stats = client.get_system_status()
+        online_count = len(stats) if stats else 0
+        bot.send_message(message.chat.id, f"✅ **اتصال موفق بود!**\nسرور: `{server.name}`\nکاربران آنلاین: {online_count}", parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, f"❌ **اتصال ناموفق!**\nاطلاعات سرور را چک کنید.")
+
+def sync_server_inbounds(bot, message, server_id):
+    session = get_db()
+    server = session.query(Server).get(server_id)
+    
+    bot.answer_callback_query(message.id, "⏳ در حال دریافت لیست...")
+    client = XUIClient(server.panel_url, server.username, server.password)
+    
+    if not client.login():
+        bot.send_message(message.chat.id, "❌ خطا در اتصال به پنل.")
         session.close()
+        return
 
+    xui_inbounds = client.get_inbounds()
+    if not xui_inbounds:
+        bot.send_message(message.chat.id, "⚠️ هیچ اینباندی یافت نشد.")
+        session.close()
+        return
 
-# ==========================================================
-#  بخش مدیریت پلن‌ها (Logic)
-# ==========================================================
+    added, updated = 0, 0
+    for item in xui_inbounds:
+        exists = session.query(Inbound).filter_by(server_id=server.id, xui_id=item['id']).first()
+        if exists:
+            exists.remark = item['remark']
+            exists.port = item['port']
+            exists.protocol = item['protocol']
+            updated += 1
+        else:
+            new_inbound = Inbound(
+                server_id=server.id,
+                xui_id=item['id'],
+                remark=item['remark'],
+                port=item['port'],
+                protocol=item['protocol']
+            )
+            session.add(new_inbound)
+            added += 1
+            
+    session.commit()
+    session.close()
+    bot.send_message(message.chat.id, f"✅ عملیات موفق!\n➕ جدید: {added}\n🔄 آپدیت: {updated}")
+    show_server_details(bot, message, server_id)
 
+# --- توابع پلن ---
 def show_plans_menu(bot, message):
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("➕ افزودن پلن جدید", callback_data="admin_add_plan"))
+    markup.add(types.InlineKeyboardButton("➕ افزودن پلن", callback_data="admin_add_plan"))
     markup.add(types.InlineKeyboardButton("📋 لیست پلن‌ها", callback_data="admin_list_plans"))
-    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back_main"))
-    
-    bot.edit_message_text("💰 **مدیریت پلن‌های فروش**\nیک گزینه را انتخاب کنید:", 
-                          message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+    markup.add(types.InlineKeyboardButton("🔙", callback_data="admin_back_main"))
+    bot.edit_message_text("مدیریت پلن‌ها:", message.chat.id, message.message_id, reply_markup=markup)
+
+def start_add_plan(bot, message):
+    admin_states[message.chat.id] = {'step': 'plan_name', 'data': {}}
+    bot.edit_message_text("📝 نام پلن:", message.chat.id, message.message_id, reply_markup=cancel_btn())
+
+def save_plan_to_db(bot, message, data):
+    session = get_db()
+    try:
+        new_plan = Plan(name=data['name'], price=data['price'], volume_gb=data['volume_gb'], duration_days=data['duration_days'])
+        
+        # نکته: فعلاً پلن را به همه اینباندهای موجود وصل می‌کنیم تا کار کند
+        # در آینده می‌توانیم سلکتور بگذاریم
+        all_inbounds = session.query(Inbound).filter_by(is_active=True).all()
+        for inbound in all_inbounds:
+            new_plan.inbounds.append(inbound)
+            
+        session.add(new_plan)
+        session.commit()
+        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** ساخته شد و به {len(all_inbounds)} اینباند متصل شد.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Error: {e}")
+    finally:
+        session.close()
 
 def list_plans(bot, message):
     session = get_db()
     plans = session.query(Plan).all()
     session.close()
-
-    if not plans:
-        bot.answer_callback_query(message.id, "هیچ پلنی تعریف نشده است.")
-        return
-
-    text = "📋 **لیست تعرفه‌های فعال:**\n\n"
-    markup = types.InlineKeyboardMarkup()
+    if not plans: return bot.answer_callback_query(message.id, "خالی است.")
     
+    text = "📋 لیست پلن‌ها:\n"
+    markup = types.InlineKeyboardMarkup()
     for p in plans:
-        text += f"🔹 **{p.name}**\n   💰 {p.price:,} تومان | ⏳ {p.duration_days} روزه | 📦 {p.volume_gb} گیگ\n\n"
-        markup.add(types.InlineKeyboardButton(f"🗑 حذف {p.name}", callback_data=f"plan_delete_{p.id}"))
-    
-    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_plans_menu"))
-    bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+        text += f"🔹 {p.name} - {int(p.price):,} T\n"
+        markup.add(types.InlineKeyboardButton(f"🗑 حذف {p.name}", callback_data=f"plan_del_{p.id}"))
+    markup.add(types.InlineKeyboardButton("🔙", callback_data="admin_plans_menu"))
+    bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup)
 
-def delete_plan(bot, message, plan_id):
+def delete_plan(bot, message, pid):
     session = get_db()
-    plan = session.query(Plan).get(plan_id)
-    if plan:
-        session.delete(plan)
+    p = session.query(Plan).get(pid)
+    if p:
+        session.delete(p)
         session.commit()
-        bot.answer_callback_query(message.id, "پلن حذف شد ✅")
+        bot.answer_callback_query(message.id, "حذف شد")
         list_plans(bot, message)
-    else:
-        bot.answer_callback_query(message.id, "خطا در حذف.")
     session.close()
-
-# --- ویزارد افزودن پلن ---
-def start_add_plan(bot, message):
-    admin_states[message.chat.id] = {'step': 'plan_name', 'data': {}}
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
-    
-    bot.edit_message_text("📝 **نام پلن را وارد کنید:**\n(مثال: یک ماهه ۲۰ گیگ)", 
-                          message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-def process_plan_wizard(bot, message, state, text):
-    step = state['step']
-    user_id = message.chat.id
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
-
-    if step == 'plan_name':
-        state['data']['name'] = text
-        state['step'] = 'plan_volume'
-        bot.send_message(user_id, "📦 **حجم پلن (گیگابایت):**\n(فقط عدد، مثلا: 20)", reply_markup=markup)
-
-    elif step == 'plan_volume':
-        if not text.isdigit():
-            bot.send_message(user_id, "❌ لطفاً فقط عدد وارد کنید.")
-            return
-        state['data']['volume_gb'] = float(text)
-        state['step'] = 'plan_days'
-        bot.send_message(user_id, "⏳ **مدت زمان (روز):**\n(فقط عدد، مثلا: 30)", reply_markup=markup)
-
-    elif step == 'plan_days':
-        if not text.isdigit():
-            bot.send_message(user_id, "❌ لطفاً فقط عدد وارد کنید.")
-            return
-        state['data']['duration_days'] = int(text)
-        state['step'] = 'plan_price'
-        bot.send_message(user_id, "💰 **قیمت (تومان):**\n(فقط عدد، مثلا: 50000)", reply_markup=markup)
-
-    elif step == 'plan_price':
-        if not text.isdigit():
-            bot.send_message(user_id, "❌ لطفاً فقط عدد وارد کنید.")
-            return
-        state['data']['price'] = float(text)
-        
-        # ذخیره پلن
-        save_plan(bot, message, state['data'])
-        del admin_states[user_id]
-
-def save_plan(bot, message, data):
-    session = get_db()
-    try:
-        new_plan = Plan(
-            name=data['name'],
-            price=data['price'],
-            volume_gb=data['volume_gb'],
-            duration_days=data['duration_days']
-        )
-        session.add(new_plan)
-        session.commit()
-        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** با موفقیت ایجاد شد.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ خطا در ذخیره: {e}")
-    finally:
-        session.close()
