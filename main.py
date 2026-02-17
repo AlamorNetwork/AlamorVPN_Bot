@@ -3,7 +3,7 @@ import telebot
 import time
 from config import BOT_TOKEN
 from database.base import init_db
-from handlers import admin
+from handlers import admin , user
 
 # ساخت دیتابیس (اگر وجود نداشته باشد)
 print("--- Initializing Database ---")
@@ -15,6 +15,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # ثبت هندلرها
 admin.register_admin_handlers(bot)
+user.register_user_handlers(bot)
 # user.register_user_handlers(bot) # بعداً اضافه می‌شود
 
 print("🤖 Bot is running...")
