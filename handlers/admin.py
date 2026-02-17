@@ -5,7 +5,7 @@ from database.base import SessionLocal
 from database.models import Server, User, Plan, Inbound, plan_inbound_association
 from config import ADMIN_IDS
 from services.xui import XUIClient
-
+from sqlalchemy.orm import joinedload
 # وضعیت‌های موقت برای ویزاردها
 admin_states = {}
 
@@ -490,28 +490,37 @@ def delete_plan(bot, call, pid):
 
 def show_server_selection_for_plan(bot, message):
     session = get_db()
-    servers = session.query(Server).filter_by(is_active=True).all()
+    # استفاده از joinedload برای لود کردن همزمان اینباندها
+    # این کار باعث می‌شود بعد از بسته شدن سشن، ارور DetachedInstanceError ندهد
+    servers = session.query(Server).options(joinedload(Server.inbounds)).filter_by(is_active=True).all()
     session.close()
     
     markup = types.InlineKeyboardMarkup()
     for s in servers:
-        # چک میکنیم سرور اینباند داشته باشد
+        # حالا s.inbounds قبلاً لود شده و ارور نمی‌دهد
         if s.inbounds:
             markup.add(types.InlineKeyboardButton(f"🖥 {s.name}", callback_data=f"plan_srv_{s.id}"))
             
     markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
     
     bot.send_message(message.chat.id, "🌍 **سرور مورد نظر را انتخاب کنید:**\n(این پلن روی کدام سرور فعال باشد؟)", reply_markup=markup, parse_mode="Markdown")
-
 def show_inbound_selection_for_plan(bot, message, server_id, refresh=False):
     session = get_db()
-    server = session.query(Server).get(server_id)
-    inbounds = server.inbounds
+    # اینجا هم joinedload استفاده می‌کنیم
+    server = session.query(Server).options(joinedload(Server.inbounds)).get(server_id)
+    
+    # اگر سرور پیدا نشد یا حذف شده بود
+    if not server:
+        session.close()
+        bot.answer_callback_query(message.id if refresh else message.message_id, "سرور یافت نشد.") # هندل کردن call vs message
+        return
+
+    # کپی کردن لیست اینباندها به یک متغیر لوکال تا بعد از بسته شدن سشن بماند
+    inbounds = list(server.inbounds)
     session.close()
     
-    user_id = message.chat.id if not refresh else message.chat.id # در حالت رفرش message همان call.message است
+    user_id = message.chat.id
     
-    # گرفتن لیست انتخاب شده‌های فعلی
     selected_ids = []
     if user_id in admin_states:
         selected_ids = admin_states[user_id]['data'].get('selected_inbounds', [])
@@ -519,12 +528,10 @@ def show_inbound_selection_for_plan(bot, message, server_id, refresh=False):
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     for inbound in inbounds:
-        # اگر انتخاب شده بود تیک بزن، اگر نه ضربدر
         status = "✅" if inbound.id in selected_ids else "⬜️"
         text = f"{status} {inbound.remark} | {inbound.protocol} ({inbound.port})"
         markup.add(types.InlineKeyboardButton(text, callback_data=f"plan_inb_{inbound.id}"))
     
-    # دکمه تایید نهایی
     btn_text = f"💾 ذخیره نهایی ({len(selected_ids)} انتخاب)"
     markup.add(types.InlineKeyboardButton(btn_text, callback_data="plan_save_final"))
     markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
@@ -534,7 +541,7 @@ def show_inbound_selection_for_plan(bot, message, server_id, refresh=False):
     if refresh:
         bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
     else:
-        bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 # اصلاح تابع ذخیره نهایی برای استفاده از اینباندهای انتخاب شده
 def save_plan_to_db(bot, message, data):
