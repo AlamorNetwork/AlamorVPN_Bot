@@ -170,13 +170,15 @@ def register_admin_handlers(bot: telebot.TeleBot):
         elif step == 'plan_name':
             state['data']['name'] = text
             state['step'] = 'plan_gb'
-            bot.send_message(uid, "📦 **حجم پلن (GB):**", reply_markup=cancel_btn())
+            # پیام راهنما آپدیت شد 👇
+            bot.send_message(uid, "📦 **حجم پلن (GB):**\n(عدد `0` به معنای حجم نامحدود است)", reply_markup=cancel_btn(), parse_mode="Markdown")
 
         elif step == 'plan_gb':
             if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
             state['data']['volume_gb'] = float(text)
             state['step'] = 'plan_days'
-            bot.send_message(uid, "⏳ **مدت زمان (روز):**", reply_markup=cancel_btn())
+            # پیام راهنما آپدیت شد 👇
+            bot.send_message(uid, "⏳ **مدت زمان (روز):**\n(عدد `0` به معنای زمان نامحدود/لایف‌تایم است)", reply_markup=cancel_btn(), parse_mode="Markdown")
 
         elif step == 'plan_days':
             if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")

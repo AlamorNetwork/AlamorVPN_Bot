@@ -160,33 +160,71 @@ def register_callback_handlers(bot: telebot.TeleBot):
 
 def create_service(payment, session):
     plan = payment.plan
-    # انتخاب اولین اینباند متصل به پلن
     if not plan.inbounds:
         return {'success': False, 'error': "پلن به هیچ سروری وصل نیست"}
     
-    inbound = plan.inbounds[0]
-    server = inbound.server
-    
+    # 1. تولید مشخصات یوزر
     new_uuid = str(uuid.uuid4())
-    email = f"u{new_uuid[:8]}"
     
-    client = XUIClient(server.panel_url, server.username, server.password)
-    if not client.login(): return {'success': False, 'error': "Login Failed"}
+    # تولید SubID (معمولاً ۱۶ کاراکتر رندوم تمیزتر است، یا همان UUID)
+    # اینجا برای یکدستی از یک رشته رندوم ۱۶ رقمی استفاده می‌کنیم
+    new_sub_id = str(uuid.uuid4()).replace('-', '')[:16]
     
-    expire = int((datetime.now() + timedelta(days=plan.duration_days)).timestamp() * 1000)
+    email = f"u{new_sub_id[:8]}"
     
-    ok = client.add_client(inbound.xui_id, email, new_uuid, plan.volume_gb, expire, True, 1, 
-                           flow="xtls-rprx-vision" if "reality" in inbound.protocol.lower() else "")
+    # 2. محاسبه زمان انقضا
+    if plan.duration_days > 0:
+        # زمان فعلی + تعداد روزها (تبدیل به میلی‌ثانیه)
+        expire_time = int((datetime.now() + timedelta(days=plan.duration_days)).timestamp() * 1000)
+        # برای ذخیره در دیتابیس
+        db_expire_date = datetime.now() + timedelta(days=plan.duration_days)
+    else:
+        # حالت نامحدود (Lifetime)
+        expire_time = 0
+        db_expire_date = None # یا یک تاریخ خیلی دور مثلا سال 2099
     
-    if ok:
-        info = client.get_client_info(inbound.xui_id, new_uuid)
-        sub_id = info.get('subId', new_uuid) if info else new_uuid
-        link = f"{server.subscription_url.rstrip('/')}/{sub_id}"
+    # 3. محاسبه حجم (در xui.py هندل کردیم که اگر <=0 باشد صفر میفرستد)
+    volume_val = plan.volume_gb 
+
+    created_count = 0
+    main_server = None
+    
+    # 4. حلقه روی تمام اینباندها (مولتی پورت)
+    for inbound in plan.inbounds:
+        server = inbound.server
+        main_server = server
         
-        pur = Purchase(user_id=payment.user_id, plan_id=plan.id, uuid=new_uuid, sub_link=link, 
-                       expire_date=datetime.now() + timedelta(days=plan.duration_days), is_active=True)
+        client = XUIClient(server.panel_url, server.username, server.password)
+        if not client.login(): continue
+        
+        # ارسال درخواست با تمام پارامترهای دستی
+        ok = client.add_client(
+            inbound_id=inbound.xui_id,
+            email=email,
+            uuid=new_uuid,
+            sub_id=new_sub_id,     # <--- ارسال SubID اختصاصی
+            total_gb=volume_val,   # <--- حجم (0=نامحدود)
+            expiry_time=expire_time, # <--- زمان (0=نامحدود)
+            enable=True,
+            limit_ip=1,            # محدودیت کاربر (قابل تغییر)
+            flow="xtls-rprx-vision" if "reality" in inbound.protocol.lower() else ""
+        )
+        if ok: created_count += 1
+
+    if created_count > 0 and main_server:
+        # ساخت لینک اشتراک با SubID که خودمان ساختیم
+        link = f"{main_server.subscription_url.rstrip('/')}/{new_sub_id}"
+        
+        pur = Purchase(
+            user_id=payment.user_id,
+            plan_id=plan.id,
+            uuid=new_uuid,
+            sub_link=link, 
+            expire_date=db_expire_date, # اگر None باشد یعنی نامحدود
+            is_active=True
+        )
         session.add(pur)
         session.flush()
         return {'success': True, 'link': link, 'purchase_id': pur.id}
     
-    return {'success': False, 'error': "API Error"}
+    return {'success': False, 'error': "خطا در اتصال به سرورها"}

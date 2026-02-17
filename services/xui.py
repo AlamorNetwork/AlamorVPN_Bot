@@ -116,14 +116,36 @@ class XUIClient:
     # ==========================
     # 3. مدیریت کلاینت‌ها
     # ==========================
-    def add_client(self, inbound_id: int, email: str, uuid: str, total_gb: float = 0, expiry_time: int = 0, enable: bool = True, limit_ip: int = 0, flow: str = ""):
+    def add_client(self, inbound_id: int, email: str, uuid: str, sub_id: str, total_gb: float = 0, expiry_time: int = 0, enable: bool = True, limit_ip: int = 1, flow: str = ""):
+        """
+        افزودن کلاینت با کنترل دقیق SubId، حجم و زمان.
+        total_gb <= 0  --> نامحدود
+        expiry_time <= 0 --> نامحدود (Lifetime)
+        """
+        
+        # محاسبه حجم (اگر صفر یا کمتر بود، یعنی نامحدود، پس 0 میفرستیم)
+        final_total = int(total_gb * 1024**3) if total_gb > 0 else 0
+        
+        # محاسبه زمان (اگر صفر یا کمتر بود، یعنی نامحدود، پس 0 میفرستیم)
+        final_expiry = expiry_time if expiry_time > 0 else 0
+
         client = {
-            "id": uuid, "email": email, "limitIp": limit_ip,
-            "totalGB": int(total_gb * 1024**3), 
-            "expiryTime": expiry_time, "enable": enable,
-            "tgId": "", "subId": "", "flow": flow
+            "id": uuid,
+            "email": email,
+            "limitIp": limit_ip,
+            "totalGB": final_total, 
+            "expiryTime": final_expiry,
+            "enable": enable,
+            "tgId": "",
+            "subId": sub_id,  # <--- ارسال دستی SubID
+            "flow": flow
         }
-        payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
+        
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({"clients": [client]})
+        }
+        
         res = self._request('POST', '/panel/api/inbounds/addClient', json=payload)
         return res and res.get('success')
 
