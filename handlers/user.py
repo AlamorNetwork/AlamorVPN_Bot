@@ -7,7 +7,7 @@ from database.base import SessionLocal
 from database.models import User, Plan, Server, Inbound, Purchase
 from services.xui import XUIClient
 from config import ADMIN_IDS
-
+from handlers.payment_process import start_card_payment # ایمپورت یادتان نرود
 # دیکشنری مراحل خرید
 user_steps = {}
 
@@ -317,3 +317,17 @@ def register_user_handlers(bot: telebot.TeleBot):
             bot.send_message(call.message.chat.id, "⚠️ مدیر سرور تمپلیت کانفیگ را تنظیم نکرده است.\nلطفاً از لینک اشتراک استفاده کنید.")
 
         session.close()
+
+
+    @bot.callback_query_handler(func=lambda call: call.data == "pay_confirm")
+    def process_purchase_request(call):
+        user_id = call.from_user.id
+        if user_id not in user_steps: return
+        
+        plan_id = user_steps[user_id]['plan_id']
+        
+        # هدایت به پروسه کارت به کارت
+        start_card_payment(bot, call.message, plan_id)
+        
+        # پاک کردن استیت خرید چون وارد استیت پرداخت می‌شود
+        del user_steps[user_id]

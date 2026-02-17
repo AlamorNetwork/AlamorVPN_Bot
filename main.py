@@ -3,8 +3,7 @@ import telebot
 import time
 from config import BOT_TOKEN
 from database.base import init_db
-from handlers import admin, user
-
+from handlers import admin, user, payment_process
 print("--- Initializing Database ---")
 init_db()
 print("✅ Database initialized.")
@@ -22,7 +21,7 @@ except Exception as e:
 # ثبت هندلرها
 admin.register_admin_handlers(bot)
 user.register_user_handlers(bot)
-
+payment_process.register_callback_handlers(bot)
 print("🤖 Bot is running...")
 try:
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
