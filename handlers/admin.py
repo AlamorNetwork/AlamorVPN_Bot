@@ -204,29 +204,47 @@ def register_admin_handlers(bot: telebot.TeleBot):
     def select_server_for_plan(call):
         if not is_admin(call.from_user.id): return
         
-        server_id = int(call.data.split('_')[-1])
-        # ذخیره سرور انتخاب شده در حافظه موقت
-        if call.from_user.id in admin_states:
-            admin_states[call.from_user.id]['data']['selected_server_id'] = server_id
-            # آماده‌سازی لیست خالی برای اینباندها
-            admin_states[call.from_user.id]['data']['selected_inbounds'] = []
-            
-            show_inbound_selection_for_plan(bot, call.message, server_id)
+        # لاگ برای اطمینان از کارکرد
+        print(f"Server Selected: {call.data}")
 
-    # هندلر تاگل کردن (انتخاب/حذف) اینباندها
+        server_id = int(call.data.split('_')[-1])
+        user_id = call.from_user.id # یا call.message.chat.id بسته به نحوه ذخیره اولیه
+        
+        # چک کنیم آیا استیت وجود دارد؟ (شاید ربات ریست شده)
+        if user_id not in admin_states:
+            # تلاش برای بازیابی استیت اگر با chat_id ذخیره شده باشد
+            if call.message.chat.id in admin_states:
+                user_id = call.message.chat.id
+            else:
+                bot.answer_callback_query(call.id, "❌ نشست منقضی شده. از اول شروع کنید.", show_alert=True)
+                return
+
+        # ذخیره سرور انتخاب شده
+        admin_states[user_id]['data']['selected_server_id'] = server_id
+        admin_states[user_id]['data']['selected_inbounds'] = []
+            
+        # نمایش مرحله بعدی (لیست اینباندها)
+        show_inbound_selection_for_plan(bot, call.message, server_id)
+
+
+    # 2. هندلر تیک زدن اینباندها (Toggle)
     @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_inb_'))
     def toggle_inbound_for_plan(call):
         if not is_admin(call.from_user.id): return
+        
         user_id = call.from_user.id
+        # هماهنگی با کلید استیت
+        if user_id not in admin_states and call.message.chat.id in admin_states:
+            user_id = call.message.chat.id
         
         if user_id not in admin_states:
-            bot.answer_callback_query(call.id, "نشست منقضی شده. دوباره تلاش کنید.")
+            bot.answer_callback_query(call.id, "نشست منقضی شده.", show_alert=True)
             return
 
         inbound_id = int(call.data.split('_')[-1])
-        selected_list = admin_states[user_id]['data']['selected_inbounds']
+        selected_list = admin_states[user_id]['data'].get('selected_inbounds', [])
         
-        # اگر بود حذف کن، اگر نبود اضافه کن (Toggle)
+        # اگر بود حذف کن، نبود اضافه کن
         if inbound_id in selected_list:
             selected_list.remove(inbound_id)
             msg = "❌ حذف شد"
@@ -236,22 +254,29 @@ def register_admin_handlers(bot: telebot.TeleBot):
             
         admin_states[user_id]['data']['selected_inbounds'] = selected_list
         
-        # رفرش کردن لیست برای آپدیت شدن تیک‌ها
+        # رفرش کردن لیست برای نمایش تیک‌ها
         server_id = admin_states[user_id]['data']['selected_server_id']
         show_inbound_selection_for_plan(bot, call.message, server_id, refresh=True)
-        bot.answer_callback_query(call.id, msg)
+        try: bot.answer_callback_query(call.id, msg)
+        except: pass
 
-    # هندلر نهایی کردن ساخت پلن
+
+    # 3. هندلر دکمه ذخیره نهایی
     @bot.callback_query_handler(func=lambda call: call.data == "plan_save_final")
-    def save_plan_final(call):
+    def save_plan_final_handler(call):
         if not is_admin(call.from_user.id): return
-        user_id = call.from_user.id
         
-        if user_id not in admin_states: return
+        user_id = call.from_user.id
+        if user_id not in admin_states and call.message.chat.id in admin_states:
+            user_id = call.message.chat.id
+
+        if user_id not in admin_states:
+            bot.answer_callback_query(call.id, "نشست منقضی شده.", show_alert=True)
+            return
         
         data = admin_states[user_id]['data']
         if not data.get('selected_inbounds'):
-            bot.answer_callback_query(call.id, "⚠️ حداقل یک اینباند انتخاب کنید!", show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ حداقل یک پورت را انتخاب کنید!", show_alert=True)
             return
             
         save_plan_to_db(bot, call.message, data)
