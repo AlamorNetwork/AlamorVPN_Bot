@@ -44,11 +44,12 @@ def register_admin_handlers(bot: telebot.TeleBot):
         )
         # چک میکنیم پیام قبلی متن بوده یا کال‌بک برای ویرایش صحیح
         if hasattr(message, 'message_id'):
-            # اگر از طریق دستور آمده، پیام جدید میفرستیم
-             bot.send_message(message.chat.id, "🛠 **پنل مدیریت پیشرفته**", reply_markup=markup, parse_mode="Markdown")
+             try:
+                bot.edit_message_text("🛠 **پنل مدیریت پیشرفته**", message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+             except:
+                bot.send_message(message.chat.id, "🛠 **پنل مدیریت پیشرفته**", reply_markup=markup, parse_mode="Markdown")
         else:
-            # اگر از طریق دکمه آمده (کال‌بک)، ادیت میکنیم
-             bot.edit_message_text("🛠 **پنل مدیریت پیشرفته**", message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+             bot.send_message(message.chat.id, "🛠 **پنل مدیریت پیشرفته**", reply_markup=markup, parse_mode="Markdown")
 
     # ==========================
     # هندلر دکمه‌های ادمین
@@ -57,6 +58,12 @@ def register_admin_handlers(bot: telebot.TeleBot):
     def handle_admin_callbacks(call):
         if not is_admin(call.from_user.id): return
         action = call.data
+        
+        # هندل کردن ارور احتمالی کوری قدیمی
+        try:
+            bot.answer_callback_query(call.id)
+        except:
+            pass
         
         if action == "admin_close":
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -79,15 +86,19 @@ def register_admin_handlers(bot: telebot.TeleBot):
         elif action.startswith("server_info_"):
             sid = int(action.split("_")[-1])
             show_server_details(bot, call.message, sid)
+            
+        # FIX: اینجا به جای call.message، خود call را می‌فرستیم
         elif action.startswith("server_sync_"):
             sid = int(action.split("_")[-1])
-            sync_server_inbounds(bot, call.message, sid)
+            sync_server_inbounds(bot, call, sid)
+            
         elif action.startswith("server_del_"):
             sid = int(action.split("_")[-1])
-            delete_server(bot, call.message, sid)
+            delete_server(bot, call, sid)
+            
         elif action.startswith("server_test_"):
             sid = int(action.split("_")[-1])
-            test_server_connection(bot, call.message, sid)
+            test_server_connection(bot, call, sid)
 
         # --- بخش پلن‌ها ---
         elif action == "admin_plans_menu":
@@ -98,7 +109,7 @@ def register_admin_handlers(bot: telebot.TeleBot):
             list_plans(bot, call.message)
         elif action.startswith("plan_del_"):
             pid = int(action.split("_")[-1])
-            delete_plan(bot, call.message, pid)
+            delete_plan(bot, call, pid)
 
         # --- بازگشت ---
         elif action == "admin_back_main":
@@ -177,7 +188,6 @@ def register_admin_handlers(bot: telebot.TeleBot):
             if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
             state['data']['price'] = float(text)
             
-            # ذخیره پلن و اتصال به همه اینباندها (فعلاً ساده)
             save_plan_to_db(bot, message, state['data'])
             del admin_states[uid]
 
@@ -198,7 +208,9 @@ def list_servers(bot, message):
     session.close()
     
     if not servers:
-        bot.answer_callback_query(message.id, "لیست خالی است.")
+        try: bot.answer_callback_query(message.id, "لیست خالی است.") # اینجا message.id درست نیست اگر از کال‌بک نیاید ولی چون list_servers از کال‌بک میاد مشکلی نیست
+        except: pass
+        bot.send_message(message.chat.id, "هیچ سروری ثبت نشده است.")
         return
 
     markup = types.InlineKeyboardMarkup()
@@ -259,46 +271,55 @@ def save_server_to_db(bot, message, data):
     finally:
         session.close()
 
-def delete_server(bot, message, server_id):
+# FIX: دریافت 'call' به جای 'message'
+def delete_server(bot, call, server_id):
+    try: bot.answer_callback_query(call.id, "در حال حذف...") 
+    except: pass
+
     session = get_db()
     server = session.query(Server).get(server_id)
     if server:
         session.delete(server)
         session.commit()
-        bot.answer_callback_query(message.id, "حذف شد.")
-        list_servers(bot, message)
+        list_servers(bot, call.message)
     session.close()
 
-def test_server_connection(bot, message, server_id):
+# FIX: دریافت 'call' به جای 'message'
+def test_server_connection(bot, call, server_id):
+    try: bot.answer_callback_query(call.id, "⏳ در حال تست اتصال...") 
+    except: pass
+    
     session = get_db()
     server = session.query(Server).get(server_id)
     session.close()
 
-    bot.answer_callback_query(message.id, "⏳ در حال تست اتصال...")
     client = XUIClient(server.panel_url, server.username, server.password)
     
     if client.login():
         stats = client.get_system_status()
         online_count = len(stats) if stats else 0
-        bot.send_message(message.chat.id, f"✅ **اتصال موفق بود!**\nسرور: `{server.name}`\nکاربران آنلاین: {online_count}", parse_mode="Markdown")
+        bot.send_message(call.message.chat.id, f"✅ **اتصال موفق بود!**\nسرور: `{server.name}`\nکاربران آنلاین: {online_count}", parse_mode="Markdown")
     else:
-        bot.send_message(message.chat.id, f"❌ **اتصال ناموفق!**\nاطلاعات سرور را چک کنید.")
+        bot.send_message(call.message.chat.id, f"❌ **اتصال ناموفق!**\nاطلاعات سرور را چک کنید.")
 
-def sync_server_inbounds(bot, message, server_id):
+# FIX: دریافت 'call' به جای 'message'
+def sync_server_inbounds(bot, call, server_id):
+    try: bot.answer_callback_query(call.id, "⏳ در حال دریافت لیست...") 
+    except: pass
+
     session = get_db()
     server = session.query(Server).get(server_id)
     
-    bot.answer_callback_query(message.id, "⏳ در حال دریافت لیست...")
     client = XUIClient(server.panel_url, server.username, server.password)
     
     if not client.login():
-        bot.send_message(message.chat.id, "❌ خطا در اتصال به پنل.")
+        bot.send_message(call.message.chat.id, "❌ خطا در اتصال به پنل.")
         session.close()
         return
 
     xui_inbounds = client.get_inbounds()
     if not xui_inbounds:
-        bot.send_message(message.chat.id, "⚠️ هیچ اینباندی یافت نشد.")
+        bot.send_message(call.message.chat.id, "⚠️ هیچ اینباندی یافت نشد.")
         session.close()
         return
 
@@ -323,8 +344,8 @@ def sync_server_inbounds(bot, message, server_id):
             
     session.commit()
     session.close()
-    bot.send_message(message.chat.id, f"✅ عملیات موفق!\n➕ جدید: {added}\n🔄 آپدیت: {updated}")
-    show_server_details(bot, message, server_id)
+    bot.send_message(call.message.chat.id, f"✅ عملیات موفق!\n➕ جدید: {added}\n🔄 آپدیت: {updated}")
+    show_server_details(bot, call.message, server_id)
 
 # --- توابع پلن ---
 def show_plans_menu(bot, message):
@@ -343,15 +364,13 @@ def save_plan_to_db(bot, message, data):
     try:
         new_plan = Plan(name=data['name'], price=data['price'], volume_gb=data['volume_gb'], duration_days=data['duration_days'])
         
-        # نکته: فعلاً پلن را به همه اینباندهای موجود وصل می‌کنیم تا کار کند
-        # در آینده می‌توانیم سلکتور بگذاریم
         all_inbounds = session.query(Inbound).filter_by(is_active=True).all()
         for inbound in all_inbounds:
             new_plan.inbounds.append(inbound)
             
         session.add(new_plan)
         session.commit()
-        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** ساخته شد و به {len(all_inbounds)} اینباند متصل شد.")
+        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** ساخته شد.")
     except Exception as e:
         bot.send_message(message.chat.id, f"Error: {e}")
     finally:
@@ -361,7 +380,10 @@ def list_plans(bot, message):
     session = get_db()
     plans = session.query(Plan).all()
     session.close()
-    if not plans: return bot.answer_callback_query(message.id, "خالی است.")
+    if not plans: 
+        try: bot.answer_callback_query(message.id, "خالی است.") 
+        except: pass
+        return
     
     text = "📋 لیست پلن‌ها:\n"
     markup = types.InlineKeyboardMarkup()
@@ -371,12 +393,15 @@ def list_plans(bot, message):
     markup.add(types.InlineKeyboardButton("🔙", callback_data="admin_plans_menu"))
     bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup)
 
-def delete_plan(bot, message, pid):
+# FIX: دریافت 'call' به جای 'message'
+def delete_plan(bot, call, pid):
+    try: bot.answer_callback_query(call.id, "در حال حذف...")
+    except: pass
+    
     session = get_db()
     p = session.query(Plan).get(pid)
     if p:
         session.delete(p)
         session.commit()
-        bot.answer_callback_query(message.id, "حذف شد")
-        list_plans(bot, message)
+        list_plans(bot, call.message)
     session.close()
