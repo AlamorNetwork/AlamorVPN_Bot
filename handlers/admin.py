@@ -183,6 +183,12 @@ def register_admin_handlers(bot: telebot.TeleBot):
         elif step == 'plan_days':
             if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
             state['data']['duration_days'] = int(text)
+            state['step'] = 'plan_limit_ip' # مرحله جدید
+            bot.send_message(uid, "👥 **تعداد کاربر (Limit IP):**\n(مثلاً 1 برای تک‌کاربره، 0 برای نامحدود)", reply_markup=cancel_btn(), parse_mode="Markdown")
+
+        elif step == 'plan_limit_ip':
+            if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
+            state['data']['limit_ip'] = int(text)
             state['step'] = 'plan_price'
             bot.send_message(uid, "💰 **قیمت (تومان):**", reply_markup=cancel_btn())
 
@@ -190,9 +196,10 @@ def register_admin_handlers(bot: telebot.TeleBot):
             if not text.isdigit(): return bot.send_message(uid, "❌ عدد وارد کنید.")
             state['data']['price'] = float(text)
             
-            save_plan_to_db(bot, message, state['data'])
-            del admin_states[uid]
-
+            # --- تغییر جدید: به جای ذخیره، لیست سرورها را نشان بده ---
+            # پاک کردن استیت متنی چون وارد مرحله دکمه‌ای می‌شویم
+            # اما دیتا را نگه می‌داریم
+            show_server_selection_for_plan(bot, message)
 # ==========================
 # توابع منطقی (Logic Functions)
 # ==========================
@@ -364,15 +371,27 @@ def start_add_plan(bot, message):
 def save_plan_to_db(bot, message, data):
     session = get_db()
     try:
-        new_plan = Plan(name=data['name'], price=data['price'], volume_gb=data['volume_gb'], duration_days=data['duration_days'])
+        new_plan = Plan(
+            name=data['name'], 
+            price=data['price'], 
+            volume_gb=data['volume_gb'], 
+            duration_days=data['duration_days'],
+            limit_ip=data['limit_ip'] # <--- اضافه شد
+        )
         
+        # اتصال به تمام اینباندهای فعال (برای حل مشکل ساخته نشدن روی همه پورت‌ها)
+        # مطمئن شوید که اینباند فعال در دیتابیس دارید!
         all_inbounds = session.query(Inbound).filter_by(is_active=True).all()
-        for inbound in all_inbounds:
-            new_plan.inbounds.append(inbound)
+        
+        if not all_inbounds:
+             bot.send_message(message.chat.id, "⚠️ هشدار: هیچ اینباندی در دیتابیس نیست! پلن ساخته شد اما به سروری وصل نیست.")
+        else:
+            for inbound in all_inbounds:
+                new_plan.inbounds.append(inbound)
             
         session.add(new_plan)
         session.commit()
-        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** ساخته شد.")
+        bot.send_message(message.chat.id, f"✅ پلن **{data['name']}** ساخته شد.\n(متصل به {len(all_inbounds)} اینباند)")
     except Exception as e:
         bot.send_message(message.chat.id, f"Error: {e}")
     finally:
@@ -407,3 +426,150 @@ def delete_plan(bot, call, pid):
         session.commit()
         list_plans(bot, call.message)
     session.close()
+
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_srv_'))
+    def select_server_for_plan(call):
+        if not is_admin(call.from_user.id): return
+        
+        server_id = int(call.data.split('_')[-1])
+        # ذخیره سرور انتخاب شده در حافظه موقت
+        if call.from_user.id in admin_states:
+            admin_states[call.from_user.id]['data']['selected_server_id'] = server_id
+            # آماده‌سازی لیست خالی برای اینباندها
+            admin_states[call.from_user.id]['data']['selected_inbounds'] = []
+            
+            show_inbound_selection_for_plan(bot, call.message, server_id)
+
+    # هندلر تاگل کردن (انتخاب/حذف) اینباندها
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_inb_'))
+    def toggle_inbound_for_plan(call):
+        if not is_admin(call.from_user.id): return
+        user_id = call.from_user.id
+        
+        if user_id not in admin_states:
+            bot.answer_callback_query(call.id, "نشست منقضی شده. دوباره تلاش کنید.")
+            return
+
+        inbound_id = int(call.data.split('_')[-1])
+        selected_list = admin_states[user_id]['data']['selected_inbounds']
+        
+        # اگر بود حذف کن، اگر نبود اضافه کن (Toggle)
+        if inbound_id in selected_list:
+            selected_list.remove(inbound_id)
+            msg = "❌ حذف شد"
+        else:
+            selected_list.append(inbound_id)
+            msg = "✅ انتخاب شد"
+            
+        admin_states[user_id]['data']['selected_inbounds'] = selected_list
+        
+        # رفرش کردن لیست برای آپدیت شدن تیک‌ها
+        server_id = admin_states[user_id]['data']['selected_server_id']
+        show_inbound_selection_for_plan(bot, call.message, server_id, refresh=True)
+        bot.answer_callback_query(call.id, msg)
+
+    # هندلر نهایی کردن ساخت پلن
+    @bot.callback_query_handler(func=lambda call: call.data == "plan_save_final")
+    def save_plan_final(call):
+        if not is_admin(call.from_user.id): return
+        user_id = call.from_user.id
+        
+        if user_id not in admin_states: return
+        
+        data = admin_states[user_id]['data']
+        if not data.get('selected_inbounds'):
+            bot.answer_callback_query(call.id, "⚠️ حداقل یک اینباند انتخاب کنید!", show_alert=True)
+            return
+            
+        save_plan_to_db(bot, call.message, data)
+        del admin_states[user_id]
+
+
+# در انتهای فایل handlers/admin.py
+
+def show_server_selection_for_plan(bot, message):
+    session = get_db()
+    servers = session.query(Server).filter_by(is_active=True).all()
+    session.close()
+    
+    markup = types.InlineKeyboardMarkup()
+    for s in servers:
+        # چک میکنیم سرور اینباند داشته باشد
+        if s.inbounds:
+            markup.add(types.InlineKeyboardButton(f"🖥 {s.name}", callback_data=f"plan_srv_{s.id}"))
+            
+    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
+    
+    bot.send_message(message.chat.id, "🌍 **سرور مورد نظر را انتخاب کنید:**\n(این پلن روی کدام سرور فعال باشد؟)", reply_markup=markup, parse_mode="Markdown")
+
+def show_inbound_selection_for_plan(bot, message, server_id, refresh=False):
+    session = get_db()
+    server = session.query(Server).get(server_id)
+    inbounds = server.inbounds
+    session.close()
+    
+    user_id = message.chat.id if not refresh else message.chat.id # در حالت رفرش message همان call.message است
+    
+    # گرفتن لیست انتخاب شده‌های فعلی
+    selected_ids = []
+    if user_id in admin_states:
+        selected_ids = admin_states[user_id]['data'].get('selected_inbounds', [])
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    for inbound in inbounds:
+        # اگر انتخاب شده بود تیک بزن، اگر نه ضربدر
+        status = "✅" if inbound.id in selected_ids else "⬜️"
+        text = f"{status} {inbound.remark} | {inbound.protocol} ({inbound.port})"
+        markup.add(types.InlineKeyboardButton(text, callback_data=f"plan_inb_{inbound.id}"))
+    
+    # دکمه تایید نهایی
+    btn_text = f"💾 ذخیره نهایی ({len(selected_ids)} انتخاب)"
+    markup.add(types.InlineKeyboardButton(btn_text, callback_data="plan_save_final"))
+    markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_cancel_state"))
+
+    text = f"🔌 **اینباندهای سرور {server.name} را انتخاب کنید:**\nبا کلیک روی هر گزینه، آن را فعال/غیرفعال کنید."
+    
+    if refresh:
+        bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+# اصلاح تابع ذخیره نهایی برای استفاده از اینباندهای انتخاب شده
+def save_plan_to_db(bot, message, data):
+    session = get_db()
+    try:
+        new_plan = Plan(
+            name=data['name'], 
+            price=data['price'], 
+            volume_gb=data['volume_gb'], 
+            duration_days=data['duration_days'],
+            limit_ip=data['limit_ip']
+        )
+        
+        # --- تغییر مهم: اتصال فقط به اینباندهای انتخاب شده ---
+        selected_ids = data['selected_inbounds']
+        selected_inbounds = session.query(Inbound).filter(Inbound.id.in_(selected_ids)).all()
+        
+        for inbound in selected_inbounds:
+            new_plan.inbounds.append(inbound)
+            
+        session.add(new_plan)
+        session.commit()
+        
+        # حذف پیام منوی انتخاب برای تمیزی
+        bot.delete_message(message.chat.id, message.message_id)
+        
+        msg = (
+            f"✅ **پلن با موفقیت ساخته شد!**\n\n"
+            f"🏷 نام: {new_plan.name}\n"
+            f"🔌 متصل به: {len(selected_inbounds)} اینباند\n"
+            f"💰 قیمت: {int(new_plan.price):,} تومان"
+        )
+        bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+        
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Error: {e}")
+    finally:
+        session.close()

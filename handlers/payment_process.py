@@ -158,61 +158,67 @@ def register_callback_handlers(bot: telebot.TeleBot):
 
         session.close()
 
+# در فایل handlers/payment_process.py
+
 def create_service(payment, session):
     plan = payment.plan
     if not plan.inbounds:
         return {'success': False, 'error': "پلن به هیچ سروری وصل نیست"}
     
-    # 1. تولید مشخصات یوزر
     new_uuid = str(uuid.uuid4())
-    
-    # تولید SubID (معمولاً ۱۶ کاراکتر رندوم تمیزتر است، یا همان UUID)
-    # اینجا برای یکدستی از یک رشته رندوم ۱۶ رقمی استفاده می‌کنیم
+    # تولید ساب آیدی تمیز (۱۶ کاراکتر)
     new_sub_id = str(uuid.uuid4()).replace('-', '')[:16]
-    
     email = f"u{new_sub_id[:8]}"
     
-    # 2. محاسبه زمان انقضا
+    # مدیریت زمان (0 = نامحدود)
     if plan.duration_days > 0:
-        # زمان فعلی + تعداد روزها (تبدیل به میلی‌ثانیه)
         expire_time = int((datetime.now() + timedelta(days=plan.duration_days)).timestamp() * 1000)
-        # برای ذخیره در دیتابیس
-        db_expire_date = datetime.now() + timedelta(days=plan.duration_days)
+        db_expire = datetime.now() + timedelta(days=plan.duration_days)
     else:
-        # حالت نامحدود (Lifetime)
         expire_time = 0
-        db_expire_date = None # یا یک تاریخ خیلی دور مثلا سال 2099
-    
-    # 3. محاسبه حجم (در xui.py هندل کردیم که اگر <=0 باشد صفر میفرستد)
-    volume_val = plan.volume_gb 
+        db_expire = None
+
+    # مدیریت IP Limit (اگر 0 بود یعنی نامحدود)
+    limit_ip_val = plan.limit_ip
 
     created_count = 0
     main_server = None
     
-    # 4. حلقه روی تمام اینباندها (مولتی پورت)
+    print(f"--- Creating User: {email} ---")
+    print(f"Targets: {len(plan.inbounds)} inbounds")
+
     for inbound in plan.inbounds:
         server = inbound.server
         main_server = server
         
-        client = XUIClient(server.panel_url, server.username, server.password)
-        if not client.login(): continue
+        try:
+            client = XUIClient(server.panel_url, server.username, server.password)
+            if not client.login():
+                print(f"❌ Failed to login to server: {server.name}")
+                continue
+            
+            ok = client.add_client(
+                inbound_id=inbound.xui_id,
+                email=email,
+                uuid=new_uuid,
+                sub_id=new_sub_id,
+                total_gb=plan.volume_gb,
+                expiry_time=expire_time,
+                enable=True,
+                limit_ip=limit_ip_val, # <--- استفاده از مقدار پلن
+                flow="xtls-rprx-vision" if "reality" in inbound.protocol.lower() else ""
+            )
+            
+            if ok:
+                print(f"✅ Created on Inbound {inbound.xui_id} ({server.name})")
+                created_count += 1
+            else:
+                print(f"❌ Failed to add client on Inbound {inbound.xui_id}")
         
-        # ارسال درخواست با تمام پارامترهای دستی
-        ok = client.add_client(
-            inbound_id=inbound.xui_id,
-            email=email,
-            uuid=new_uuid,
-            sub_id=new_sub_id,     # <--- ارسال SubID اختصاصی
-            total_gb=volume_val,   # <--- حجم (0=نامحدود)
-            expiry_time=expire_time, # <--- زمان (0=نامحدود)
-            enable=True,
-            limit_ip=1,            # محدودیت کاربر (قابل تغییر)
-            flow="xtls-rprx-vision" if "reality" in inbound.protocol.lower() else ""
-        )
-        if ok: created_count += 1
+        except Exception as e:
+            print(f"⚠️ Exception for inbound {inbound.id}: {e}")
 
     if created_count > 0 and main_server:
-        # ساخت لینک اشتراک با SubID که خودمان ساختیم
         link = f"{main_server.subscription_url.rstrip('/')}/{new_sub_id}"
         
         pur = Purchase(
@@ -220,11 +226,11 @@ def create_service(payment, session):
             plan_id=plan.id,
             uuid=new_uuid,
             sub_link=link, 
-            expire_date=db_expire_date, # اگر None باشد یعنی نامحدود
+            expire_date=db_expire,
             is_active=True
         )
         session.add(pur)
         session.flush()
         return {'success': True, 'link': link, 'purchase_id': pur.id}
     
-    return {'success': False, 'error': "خطا در اتصال به سرورها"}
+    return {'success': False, 'error': "خطا در تمام سرورها"}

@@ -54,6 +54,7 @@ class Inbound(Base):
     # رابطه با پلن‌ها
     plans = relationship("Plan", secondary=plan_inbound_association, back_populates="inbounds")
 
+
 class Plan(Base):
     __tablename__ = 'plans'
     id = Column(Integer, primary_key=True)
@@ -61,9 +62,13 @@ class Plan(Base):
     price = Column(Float, nullable=False)
     volume_gb = Column(Float, nullable=False)
     duration_days = Column(Integer, nullable=False)
+    
+    # فیلد جدید: تعداد کاربر (Limit IP)
+    limit_ip = Column(Integer, default=1, nullable=False)
+    
     is_active = Column(Boolean, default=True)
     
-    # پلن به کدام اینباندها متصل است؟
+    # ارتباط با اینباندها
     inbounds = relationship("Inbound", secondary=plan_inbound_association, back_populates="plans")
 
 class Purchase(Base):
