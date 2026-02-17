@@ -200,6 +200,62 @@ def register_admin_handlers(bot: telebot.TeleBot):
             # پاک کردن استیت متنی چون وارد مرحله دکمه‌ای می‌شویم
             # اما دیتا را نگه می‌داریم
             show_server_selection_for_plan(bot, message)
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_srv_'))
+    def select_server_for_plan(call):
+        if not is_admin(call.from_user.id): return
+        
+        server_id = int(call.data.split('_')[-1])
+        # ذخیره سرور انتخاب شده در حافظه موقت
+        if call.from_user.id in admin_states:
+            admin_states[call.from_user.id]['data']['selected_server_id'] = server_id
+            # آماده‌سازی لیست خالی برای اینباندها
+            admin_states[call.from_user.id]['data']['selected_inbounds'] = []
+            
+            show_inbound_selection_for_plan(bot, call.message, server_id)
+
+    # هندلر تاگل کردن (انتخاب/حذف) اینباندها
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_inb_'))
+    def toggle_inbound_for_plan(call):
+        if not is_admin(call.from_user.id): return
+        user_id = call.from_user.id
+        
+        if user_id not in admin_states:
+            bot.answer_callback_query(call.id, "نشست منقضی شده. دوباره تلاش کنید.")
+            return
+
+        inbound_id = int(call.data.split('_')[-1])
+        selected_list = admin_states[user_id]['data']['selected_inbounds']
+        
+        # اگر بود حذف کن، اگر نبود اضافه کن (Toggle)
+        if inbound_id in selected_list:
+            selected_list.remove(inbound_id)
+            msg = "❌ حذف شد"
+        else:
+            selected_list.append(inbound_id)
+            msg = "✅ انتخاب شد"
+            
+        admin_states[user_id]['data']['selected_inbounds'] = selected_list
+        
+        # رفرش کردن لیست برای آپدیت شدن تیک‌ها
+        server_id = admin_states[user_id]['data']['selected_server_id']
+        show_inbound_selection_for_plan(bot, call.message, server_id, refresh=True)
+        bot.answer_callback_query(call.id, msg)
+
+    # هندلر نهایی کردن ساخت پلن
+    @bot.callback_query_handler(func=lambda call: call.data == "plan_save_final")
+    def save_plan_final(call):
+        if not is_admin(call.from_user.id): return
+        user_id = call.from_user.id
+        
+        if user_id not in admin_states: return
+        
+        data = admin_states[user_id]['data']
+        if not data.get('selected_inbounds'):
+            bot.answer_callback_query(call.id, "⚠️ حداقل یک اینباند انتخاب کنید!", show_alert=True)
+            return
+            
+        save_plan_to_db(bot, call.message, data)
+        del admin_states[user_id]
 # ==========================
 # توابع منطقی (Logic Functions)
 # ==========================
@@ -428,62 +484,7 @@ def delete_plan(bot, call, pid):
     session.close()
 
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_srv_'))
-    def select_server_for_plan(call):
-        if not is_admin(call.from_user.id): return
-        
-        server_id = int(call.data.split('_')[-1])
-        # ذخیره سرور انتخاب شده در حافظه موقت
-        if call.from_user.id in admin_states:
-            admin_states[call.from_user.id]['data']['selected_server_id'] = server_id
-            # آماده‌سازی لیست خالی برای اینباندها
-            admin_states[call.from_user.id]['data']['selected_inbounds'] = []
-            
-            show_inbound_selection_for_plan(bot, call.message, server_id)
-
-    # هندلر تاگل کردن (انتخاب/حذف) اینباندها
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('plan_inb_'))
-    def toggle_inbound_for_plan(call):
-        if not is_admin(call.from_user.id): return
-        user_id = call.from_user.id
-        
-        if user_id not in admin_states:
-            bot.answer_callback_query(call.id, "نشست منقضی شده. دوباره تلاش کنید.")
-            return
-
-        inbound_id = int(call.data.split('_')[-1])
-        selected_list = admin_states[user_id]['data']['selected_inbounds']
-        
-        # اگر بود حذف کن، اگر نبود اضافه کن (Toggle)
-        if inbound_id in selected_list:
-            selected_list.remove(inbound_id)
-            msg = "❌ حذف شد"
-        else:
-            selected_list.append(inbound_id)
-            msg = "✅ انتخاب شد"
-            
-        admin_states[user_id]['data']['selected_inbounds'] = selected_list
-        
-        # رفرش کردن لیست برای آپدیت شدن تیک‌ها
-        server_id = admin_states[user_id]['data']['selected_server_id']
-        show_inbound_selection_for_plan(bot, call.message, server_id, refresh=True)
-        bot.answer_callback_query(call.id, msg)
-
-    # هندلر نهایی کردن ساخت پلن
-    @bot.callback_query_handler(func=lambda call: call.data == "plan_save_final")
-    def save_plan_final(call):
-        if not is_admin(call.from_user.id): return
-        user_id = call.from_user.id
-        
-        if user_id not in admin_states: return
-        
-        data = admin_states[user_id]['data']
-        if not data.get('selected_inbounds'):
-            bot.answer_callback_query(call.id, "⚠️ حداقل یک اینباند انتخاب کنید!", show_alert=True)
-            return
-            
-        save_plan_to_db(bot, call.message, data)
-        del admin_states[user_id]
+    
 
 
 # در انتهای فایل handlers/admin.py
